@@ -7,6 +7,9 @@ yarn.lock
 dist/
 .vercel/
 
+# Keep public directory structure
+!public/.gitkeep
+
 # Environment variables
 .env
 .env.local
