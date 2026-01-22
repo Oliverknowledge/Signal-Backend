@@ -44,10 +44,11 @@ function validatePrivacyConstraints(body: unknown): { valid: boolean; error?: st
 
   const keys = Object.keys(body);
   const forbiddenFound = keys.filter((key) =>
-    FORBIDDEN_FIELDS.some((forbidden) =>
-      key.toLowerCase().includes(forbidden.toLowerCase())
-    )
+    FORBIDDEN_FIELDS.includes(key.toLowerCase())
   );
+  
+  
+  
 
   if (forbiddenFound.length > 0) {
     return {
