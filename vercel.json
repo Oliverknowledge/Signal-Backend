@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/opik-log.ts": {
+      "maxDuration": 10
+    }
+  }
+}

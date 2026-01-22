@@ -1,0 +1,23 @@
+{
+  "name": "signal-opik-relay",
+  "version": "1.0.0",
+  "description": "Server-side Opik relay service for Signal iOS app observability",
+  "private": true,
+  "scripts": {
+    "dev": "vercel dev",
+    "build": "tsc",
+    "deploy": "vercel --prod"
+  },
+  "dependencies": {
+    "zod": "^3.22.4",
+    "@vercel/node": "^3.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.3",
+    "vercel": "^34.0.0"
+  },
+  "engines": {
+    "node": ">=18.x"
+  }
+}
