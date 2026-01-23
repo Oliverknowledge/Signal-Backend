@@ -3,7 +3,7 @@
  * Extracts concepts, scores relevance/learning value, and generates recall questions
  */
 
-import OpenAI from 'openai';
+import OpenAI from "openai";
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -13,16 +13,16 @@ export interface AnalysisResult {
   concepts: string[];
   relevance_score: number;
   learning_value_score: number;
-  decision: 'triggered' | 'ignored';
-  recall_questions: Array<{
-    question: string;
-    type: 'mcq' | 'open';
-  }>;
+  decision: "triggered" | "ignored";
+  recall_questions: Array<
+    | { type: "open"; question: string }
+    | { type: "mcq"; question: string; options: string[]; correct_index: number }
+  >;
 }
 
 /**
  * Analyzes content using OpenAI to extract concepts, score relevance/learning value,
- * and generate recall questions if triggered
+ * and generate recall questions if triggered.
  */
 export async function analyzeContent(
   content: string,
@@ -30,92 +30,212 @@ export async function analyzeContent(
   knownConcepts: string[],
   weakConcepts: string[]
 ): Promise<AnalysisResult> {
-  const systemPrompt = `You are an AI tutor analyzing educational content for Signal, a learning app. Your job is to:
-1. Extract fine-grained learning concepts from the content
-2. Score how relevant the content is to the user's learning goal (0-1)
-3. Score the learning value of the content (0-1)
-4. Decide if the content should trigger learning intervention (both scores >= 0.7)
-5. Generate 3-5 recall questions if triggered
+  const systemPrompt = `You are Signal’s analysis engine.
+Return ONLY valid JSON matching the provided schema. No markdown, no extra keys.
 
-Always respond with valid JSON only, no markdown formatting.`;
+High standards:
+- Concepts must be specific and testable (e.g., "RAII", "std::unique_ptr ownership semantics"), not vague ("programming").
+- Prefer interview-relevant phrasing: include pitfalls, edge cases, and correctness when applicable.
+- Avoid duplicates and near-duplicates. Prefer 6–10 best concepts over long lists.
+- Scores must be calibrated (0–1). Don’t always output >0.8.
+- If you output MCQs, they MUST have exactly 4 options and exactly 1 correct answer.`;
 
-  const userPrompt = `Analyze the following content against the user's learning goal.
+  const userPrompt = `Analyze the content against the user's goal and prior knowledge.
 
-User's Learning Goal: ${goalDescription}
+GOAL (short): ${goalDescription}
 
-Known Concepts (user already understands): ${knownConcepts.join(', ') || 'None'}
-Weak Concepts (user needs practice): ${weakConcepts.join(', ') || 'None'}
+KNOWN (avoid reteaching): ${knownConcepts.join(", ") || "None"}
+WEAK (prioritize): ${weakConcepts.join(", ") || "None"}
 
-Content:
+CONTENT (may be long; focus on the core teachable parts):
 ${content}
 
-Respond with a JSON object in this exact format:
+Return JSON in this exact schema (no extra fields):
 {
-  "concepts": ["concept1", "concept2", ...],
-  "relevance_score": 0.85,
-  "learning_value_score": 0.92,
-  "decision": "triggered",
+  "concepts": ["string"],
+  "relevance_score": number,        // 0..1
+  "learning_value_score": number,    // 0..1
   "recall_questions": [
-    {"question": "What is X?", "type": "open"},
-    {"question": "Which of the following is true about Y? A) Option 1 B) Option 2 C) Option 3", "type": "mcq"}
+    { "type": "open", "question": "string" },
+    { "type": "mcq", "question": "string", "options": ["string","string","string","string"], "correct_index": 0 }
   ]
 }
 
-Extract 5-15 fine-grained concepts. Score relevance (how well content matches the goal) and learning_value (how much the user can learn) on a 0-1 scale. Set decision to "triggered" if both scores >= 0.7, otherwise "ignored". Generate 3-5 recall questions only if triggered.`;
+Rules:
+- concepts: 6–10 items, unique, specific, noun-phrases.
+  - Include at least 2 from WEAK if present.
+  - Include at least 2 "pitfall/edge-case" concepts if applicable.
+- relevance_score: alignment of THIS content to GOAL (0..1).
+- learning_value_score: how much the user can learn given KNOWN/WEAK (0..1).
+- recall_questions:
+  - ONLY include questions if BOTH scores >= 0.7. Otherwise return [].
+  - If triggered, return EXACTLY 4 questions: 2 open + 2 mcq.
+  - Questions must test concepts found in the content.
+  - MCQs: 4 plausible options, one correct_index (0..3). No "All of the above". No trick answers.`;
 
   try {
     const completion = await openai.chat.completions.create({
-      model: 'gpt-4o-mini', // Using cost-effective model, can upgrade to gpt-4o if needed
+      model: "gpt-4o-mini",
       messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
       ],
-      response_format: { type: 'json_object' },
-      temperature: 0.7,
-      max_tokens: 2000,
+      response_format: { type: "json_object" },
+      temperature: 0.3,
+      max_tokens: 1800,
     });
 
     const responseText = completion.choices[0]?.message?.content;
-    if (!responseText) {
-      throw new Error('No response from OpenAI');
-    }
+    if (!responseText) throw new Error("No response from OpenAI");
 
-    // Parse JSON response
     const parsed = JSON.parse(responseText);
 
-    // Validate and normalize the response
-    const concepts = Array.isArray(parsed.concepts) ? parsed.concepts : [];
-    const relevance_score = Math.max(0, Math.min(1, Number(parsed.relevance_score) || 0));
-    const learning_value_score = Math.max(0, Math.min(1, Number(parsed.learning_value_score) || 0));
-    const decision: 'triggered' | 'ignored' = 
-      relevance_score >= 0.7 && learning_value_score >= 0.7 ? 'triggered' : 'ignored';
-    
-    // Ensure decision matches scores
-    const finalDecision = parsed.decision === 'triggered' && decision === 'triggered' 
-      ? 'triggered' 
-      : 'ignored';
+    // Normalize scores
+    const relevance_score = clamp01(Number(parsed.relevance_score));
+    const learning_value_score = clamp01(Number(parsed.learning_value_score));
 
-    const recall_questions = finalDecision === 'triggered' && Array.isArray(parsed.recall_questions)
-      ? parsed.recall_questions
-          .filter((q: any) => q && typeof q.question === 'string')
-          .map((q: any) => ({
-            question: q.question,
-            type: (q.type === 'mcq' || q.type === 'open') ? q.type : 'open',
-          }))
-          .slice(0, 5) // Limit to 5 questions
-      : [];
+    // Server is source of truth for decision
+    const decision: "triggered" | "ignored" =
+      relevance_score >= 0.7 && learning_value_score >= 0.7
+        ? "triggered"
+        : "ignored";
+
+    // Concepts: sanitize + dedupe + cap + remove too-vague
+    const rawConcepts = Array.isArray(parsed.concepts) ? parsed.concepts : [];
+    const concepts = normalizeConcepts(rawConcepts, 10);
+
+    // Questions: only if triggered, then normalize + enforce minimum count via fallback
+    let recall_questions: AnalysisResult["recall_questions"] =
+      decision === "triggered" && Array.isArray(parsed.recall_questions)
+        ? normalizeQuestions(parsed.recall_questions).slice(0, 5)
+        : [];
+
+    // Ensure at least 3 questions (demo-safe) and ideally 4, without trusting model
+    if (decision === "triggered") {
+      const target = 4;
+      if (recall_questions.length < target) {
+        const needed = target - recall_questions.length;
+        const extras = buildFallbackQuestions(concepts, needed);
+        recall_questions = recall_questions.concat(extras).slice(0, target);
+      } else if (recall_questions.length > target) {
+        recall_questions = recall_questions.slice(0, target);
+      }
+    } else {
+      recall_questions = [];
+    }
 
     return {
-      concepts: concepts.filter((c: any) => typeof c === 'string').slice(0, 15), // Limit to 15 concepts
+      concepts,
       relevance_score,
       learning_value_score,
-      decision: finalDecision,
+      decision,
       recall_questions,
     };
   } catch (error) {
-    if (error instanceof Error) {
-      throw new Error(`OpenAI analysis failed: ${error.message}`);
-    }
-    throw new Error('OpenAI analysis failed: Unknown error');
+    const msg = error instanceof Error ? error.message : "Unknown error";
+    throw new Error(`OpenAI analysis failed: ${msg}`);
   }
+}
+
+/** Helpers */
+
+function clamp01(x: number): number {
+  if (!Number.isFinite(x)) return 0;
+  return Math.max(0, Math.min(1, x));
+}
+
+function normalizeConcepts(input: any[], max: number): string[] {
+  const cleaned = input
+    .filter((c) => typeof c === "string")
+    .map((c) => c.trim())
+    .filter((c) => c.length >= 3 && c.length <= 80)
+    .filter((c) => !isTooVague(c));
+
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const c of cleaned) {
+    const key = c.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(c);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+function isTooVague(concept: string): boolean {
+  const vague = new Set([
+    "programming",
+    "coding",
+    "software",
+    "computer science",
+    "development",
+    "learning",
+    "technology",
+    "basics",
+    "memory management", // too broad on its own; allow more specific variants
+  ]);
+  return vague.has(concept.toLowerCase());
+}
+
+type NormalizedQuestion =
+  | { type: "open"; question: string }
+  | { type: "mcq"; question: string; options: string[]; correct_index: number };
+
+function normalizeQuestions(input: any[]): NormalizedQuestion[] {
+  const out: NormalizedQuestion[] = [];
+
+  for (const q of input) {
+    if (!q || typeof q !== "object") continue;
+
+    const type = q.type === "mcq" ? "mcq" : q.type === "open" ? "open" : null;
+    const question = typeof q.question === "string" ? q.question.trim() : "";
+
+    if (!type || question.length < 8 || question.length > 220) continue;
+
+    if (type === "open") {
+      out.push({ type: "open", question });
+      continue;
+    }
+
+    // MCQ validation
+    const options = Array.isArray(q.options)
+      ? q.options
+          .filter((o: any) => typeof o === "string")
+          .map((o: string) => o.trim())
+      : [];
+
+    const correct_index = Number(q.correct_index);
+
+    if (options.length !== 4) continue;
+    if (![0, 1, 2, 3].includes(correct_index)) continue;
+
+    const optSet = new Set(options.map((o: any) => o.toLowerCase()));
+    if (optSet.size !== 4) continue;
+
+    // Avoid garbage options
+    if (options.some((o: any) => o.length < 2 || o.length > 120)) continue;
+
+    out.push({ type: "mcq", question, options, correct_index });
+  }
+
+  return out;
+}
+
+function buildFallbackQuestions(
+  concepts: string[],
+  needed: number
+): Array<{ type: "open"; question: string }> {
+  const picked = concepts.slice(0, Math.max(needed, 1));
+  const extras: Array<{ type: "open"; question: string }> = [];
+
+  for (let i = 0; i < needed; i++) {
+    const c = picked[i] ?? "this concept";
+    extras.push({
+      type: "open",
+      question: `Explain ${c} in 1–2 sentences and name one common mistake or pitfall.`,
+    });
+  }
+
+  return extras;
 }

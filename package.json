@@ -4,20 +4,20 @@
   "description": "Server-side Opik relay service for Signal iOS app observability",
   "private": true,
   "scripts": {
-    "dev": "vercel dev",
     "deploy": "vercel --prod"
   },
   "dependencies": {
-    "zod": "^3.22.4",
     "@vercel/node": "^3.0.0",
+    "cheerio": "^1.0.0-rc.12",
     "openai": "^4.20.0",
-    "cheerio": "^1.0.0-rc.12"
+    "youtube-transcript": "^1.2.1",
+    "zod": "^3.22.4"
   },
   "devDependencies": {
-    "@types/node": "^20.10.0",
     "@types/cheerio": "^0.22.35",
+    "@types/node": "^20.10.0",
     "typescript": "^5.3.3",
-    "vercel": "^34.0.0"
+    "vercel": "^50.4.11"
   },
   "engines": {
     "node": ">=18.x"

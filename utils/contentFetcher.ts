@@ -61,111 +61,57 @@ function parseTranscriptXml(xml: string): string | null {
 }
 
 /**
- * Fetches YouTube transcript using YouTube's timedtext API
- * Tries multiple language codes and methods
+ * Fetches YouTube transcript by extracting caption tracks from video page
+ * Works with both manual and auto-generated captions
+ */
+
+  
+/**
+ * Fetches YouTube transcript using RapidAPI youtube-transcript3 API
  */
 async function fetchYouTubeTranscript(videoId: string): Promise<string> {
-  // Try multiple language codes in order of preference
-  const languageCodes = ['en', 'en-US', 'en-GB', 'en-CA', 'en-AU'];
-  
-  // Method 1: Try direct timedtext API with different language codes
-  for (const lang of languageCodes) {
-    try {
-      const transcriptApiUrl = `https://www.youtube.com/api/timedtext?lang=${lang}&v=${videoId}&fmt=srv3`;
-      const response = await fetch(transcriptApiUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept-Language': 'en-US,en;q=0.9',
-        },
-        signal: AbortSignal.timeout(10000),
-      });
-
-      if (response.ok) {
-        const xml = await response.text();
-        // Check if we got actual transcript data (not an error page)
-        if (xml.includes('<transcript>') || xml.includes('<text')) {
-          const transcript = parseTranscriptXml(xml);
-          if (transcript) {
-            return transcript;
-          }
-        }
-      }
-    } catch (error) {
-      // Continue to next language
-      continue;
-    }
+  const apiKey = process.env.RAPIDAPI_KEY;
+  if (!apiKey) {
+    throw new Error("RAPIDAPI_KEY not set in environment");
   }
-
-  // Method 2: Try without language parameter (YouTube auto-detects)
+  console.log(`Fetching YouTube transcript for video ${videoId}`);
+  console.log(`API key: ${apiKey}`);
+  const url = `https://youtube-transcript3.p.rapidapi.com/api/transcript?videoId=${videoId}`;
+  console.log(`URL: ${url}`);
   try {
-    const transcriptApiUrl = `https://www.youtube.com/api/timedtext?v=${videoId}&fmt=srv3`;
-    const response = await fetch(transcriptApiUrl, {
+    const response = await fetch(url, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        "x-rapidapi-host": "youtube-transcript3.p.rapidapi.com",
+        "x-rapidapi-key": apiKey,
       },
-      signal: AbortSignal.timeout(10000),
-    });
-
-    if (response.ok) {
-      const xml = await response.text();
-      if (xml.includes('<transcript>') || xml.includes('<text')) {
-        const transcript = parseTranscriptXml(xml);
-        if (transcript) {
-          return transcript;
-        }
-      }
-    }
-  } catch (error) {
-    console.error('Failed to fetch YouTube transcript (auto-detect):', error);
-  }
-
-  // Method 3: Try fetching video page to get caption track info
-  try {
-    const videoPageUrl = `https://www.youtube.com/watch?v=${videoId}`;
-    const response = await fetch(videoPageUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      },
-      signal: AbortSignal.timeout(10000),
-    });
-
-    if (response.ok) {
-      const html = await response.text();
       
-      // Try to extract caption track URL from the page
-      // YouTube embeds caption track info in the page
-      const captionTrackMatch = html.match(/"captionTracks":\[([^\]]+)\]/);
-      if (captionTrackMatch) {
-        try {
-          const captionTracks = JSON.parse(`[${captionTrackMatch[1]}]`);
-          // Try the first available caption track
-          if (captionTracks.length > 0 && captionTracks[0].baseUrl) {
-            const captionUrl = captionTracks[0].baseUrl;
-            const captionResponse = await fetch(captionUrl, {
-              headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-              },
-              signal: AbortSignal.timeout(10000),
-            });
-
-            if (captionResponse.ok) {
-              const xml = await captionResponse.text();
-              const transcript = parseTranscriptXml(xml);
-              if (transcript) {
-                return transcript;
-              }
-            }
-          }
-        } catch (parseError) {
-          // Continue to error
-        }
-      }
+    });
+    if (!response.ok) {
+      throw new Error(`RapidAPI error: ${response.status} ${response.statusText}`);
     }
-  } catch (error) {
-    console.error('Failed to fetch YouTube video page:', error);
-  }
 
-  throw new Error(`Unable to fetch transcript for YouTube video: ${videoId}. The video may not have captions available.`);
+    const data = await response.json();
+
+    // Validate shape
+    if (!data || !(data as any).success || !Array.isArray((data as any).transcript)) {
+      throw new Error("Invalid RapidAPI transcript response");
+    }
+
+    const transcript = (data as any).transcript
+      .map((item: any) => item.text)
+      .join(" ")
+      .trim();
+    console.log(`Transcript: ${transcript}`);
+    if (!transcript || transcript.length === 0) {
+      throw new Error("Empty transcript returned");
+    }
+
+    return transcript.substring(0, MAX_CONTENT_LENGTH);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    console.error(`Failed to fetch transcript for video ${videoId}:`, message);
+    throw new Error(`Unable to fetch transcript via RapidAPI: ${message}`);
+  }
 }
 
 /**
