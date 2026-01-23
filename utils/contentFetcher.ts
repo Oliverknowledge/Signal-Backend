@@ -26,55 +26,146 @@ function extractYouTubeId(url: string): string | null {
 }
 
 /**
- * Fetches YouTube transcript using yt-dlp or transcript API
- * Falls back to a simple fetch if transcript API is available
+ * Parses XML transcript and extracts text content
+ */
+function parseTranscriptXml(xml: string): string | null {
+  try {
+    // Simple XML parsing to extract text
+    const textMatches = xml.match(/<text[^>]*>([^<]+)<\/text>/g);
+    if (textMatches && textMatches.length > 0) {
+      const transcript = textMatches
+        .map((match) => {
+          // Extract text content and decode HTML entities
+          const textContent = match.replace(/<[^>]+>/g, '');
+          return textContent
+            .replace(/&amp;/g, '&')
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+            .replace(/&quot;/g, '"')
+            .replace(/&#39;/g, "'")
+            .replace(/&nbsp;/g, ' ')
+            .replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(parseInt(dec, 10)))
+            .replace(/&apos;/g, "'");
+        })
+        .join(' ')
+        .trim();
+      
+      if (transcript.length > 0) {
+        return transcript.substring(0, MAX_CONTENT_LENGTH);
+      }
+    }
+  } catch (error) {
+    console.error('Failed to parse transcript XML:', error);
+  }
+  return null;
+}
+
+/**
+ * Fetches YouTube transcript using YouTube's timedtext API
+ * Tries multiple language codes and methods
  */
 async function fetchYouTubeTranscript(videoId: string): Promise<string> {
-  // Try using a transcript API service (you may need to configure this)
-  // For now, we'll use a simple approach with yt-transcript or similar
-  // In production, you might want to use a service like YouTube Transcript API
+  // Try multiple language codes in order of preference
+  const languageCodes = ['en', 'en-US', 'en-GB', 'en-CA', 'en-AU'];
   
+  // Method 1: Try direct timedtext API with different language codes
+  for (const lang of languageCodes) {
+    try {
+      const transcriptApiUrl = `https://www.youtube.com/api/timedtext?lang=${lang}&v=${videoId}&fmt=srv3`;
+      const response = await fetch(transcriptApiUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept-Language': 'en-US,en;q=0.9',
+        },
+        signal: AbortSignal.timeout(10000),
+      });
+
+      if (response.ok) {
+        const xml = await response.text();
+        // Check if we got actual transcript data (not an error page)
+        if (xml.includes('<transcript>') || xml.includes('<text')) {
+          const transcript = parseTranscriptXml(xml);
+          if (transcript) {
+            return transcript;
+          }
+        }
+      }
+    } catch (error) {
+      // Continue to next language
+      continue;
+    }
+  }
+
+  // Method 2: Try without language parameter (YouTube auto-detects)
   try {
-    // Option 1: Use a transcript API if available
-    const transcriptApiUrl = `https://www.youtube.com/api/timedtext?lang=en&v=${videoId}`;
+    const transcriptApiUrl = `https://www.youtube.com/api/timedtext?v=${videoId}&fmt=srv3`;
     const response = await fetch(transcriptApiUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; Signal-Bot/1.0)',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
       },
+      signal: AbortSignal.timeout(10000),
     });
 
     if (response.ok) {
       const xml = await response.text();
-      // Simple XML parsing to extract text
-      const textMatches = xml.match(/<text[^>]*>([^<]+)<\/text>/g);
-      if (textMatches && textMatches.length > 0) {
-        const transcript = textMatches
-          .map((match) => {
-            // Extract text content and decode HTML entities
-            const textContent = match.replace(/<[^>]+>/g, '');
-            return textContent
-              .replace(/&amp;/g, '&')
-              .replace(/&lt;/g, '<')
-              .replace(/&gt;/g, '>')
-              .replace(/&quot;/g, '"')
-              .replace(/&#39;/g, "'")
-              .replace(/&nbsp;/g, ' ');
-          })
-          .join(' ')
-          .trim();
-        
-        if (transcript.length > 0) {
-          return transcript.substring(0, MAX_CONTENT_LENGTH);
+      if (xml.includes('<transcript>') || xml.includes('<text')) {
+        const transcript = parseTranscriptXml(xml);
+        if (transcript) {
+          return transcript;
         }
       }
     }
   } catch (error) {
-    console.error('Failed to fetch YouTube transcript:', error);
+    console.error('Failed to fetch YouTube transcript (auto-detect):', error);
   }
 
-  // Fallback: Try alternative transcript service
-  // You might want to integrate with a service like RapidAPI YouTube Transcript
-  throw new Error(`Unable to fetch transcript for YouTube video: ${videoId}`);
+  // Method 3: Try fetching video page to get caption track info
+  try {
+    const videoPageUrl = `https://www.youtube.com/watch?v=${videoId}`;
+    const response = await fetch(videoPageUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      },
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (response.ok) {
+      const html = await response.text();
+      
+      // Try to extract caption track URL from the page
+      // YouTube embeds caption track info in the page
+      const captionTrackMatch = html.match(/"captionTracks":\[([^\]]+)\]/);
+      if (captionTrackMatch) {
+        try {
+          const captionTracks = JSON.parse(`[${captionTrackMatch[1]}]`);
+          // Try the first available caption track
+          if (captionTracks.length > 0 && captionTracks[0].baseUrl) {
+            const captionUrl = captionTracks[0].baseUrl;
+            const captionResponse = await fetch(captionUrl, {
+              headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+              },
+              signal: AbortSignal.timeout(10000),
+            });
+
+            if (captionResponse.ok) {
+              const xml = await captionResponse.text();
+              const transcript = parseTranscriptXml(xml);
+              if (transcript) {
+                return transcript;
+              }
+            }
+          }
+        } catch (parseError) {
+          // Continue to error
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Failed to fetch YouTube video page:', error);
+  }
+
+  throw new Error(`Unable to fetch transcript for YouTube video: ${videoId}. The video may not have captions available.`);
 }
 
 /**
