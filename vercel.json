@@ -2,6 +2,9 @@
   "functions": {
     "api/opik-log.ts": {
       "maxDuration": 10
+    },
+    "api/analyze.ts": {
+      "maxDuration": 60
     }
   },
   "rewrites": [
