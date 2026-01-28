@@ -110,7 +110,7 @@ export default async function handler(
       return;
     }
 
-    // Step 3: Log to Opik (async, non-blocking)
+    // Step 3: Log to Opik (async, non-blocking) using multi-span trace
     const contentType = getContentType(content_url);
     logToOpik(
       traceId,
@@ -119,7 +119,8 @@ export default async function handler(
       analysisResult.decision,
       analysisResult.concepts.length,
       user_id_hash,
-      contentType
+      contentType,
+      analysisResult.recall_questions.length
     ).catch((error) => {
       // Log error but don't block response
       console.error('Opik logging failed:', error instanceof Error ? error.message : 'Unknown error');
