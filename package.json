@@ -10,6 +10,7 @@
     "@vercel/node": "^3.0.0",
     "cheerio": "^1.0.0-rc.12",
     "openai": "^4.20.0",
+    "opik": "^1.9.102",
     "youtube-transcript": "^1.2.1",
     "zod": "^3.22.4"
   },
