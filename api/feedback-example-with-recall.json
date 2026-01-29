@@ -1,0 +1,8 @@
+{
+  "trace_id": "550e8400-e29b-41d4-a716-446655440001",
+  "content_id": "https://example.com/video#abc",
+  "feedback": "not_useful",
+  "recall_correct": 2,
+  "recall_total": 3,
+  "timestamp": "2025-01-29T14:35:00.000Z"
+}

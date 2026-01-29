@@ -1,6 +1,8 @@
   import { z } from 'zod';
   import type { VercelRequest, VercelResponse } from '@vercel/node';
   import { Opik } from 'opik';
+  import { validateRelayToken } from '../utils/relayAuth';
+  import { validatePrivacyConstraintsRecursive } from '../utils/privacy';
 
   // Request schema validation
   // One trace = one content item processed.
@@ -19,63 +21,6 @@
   });
  
   type OpikLogRequest = z.infer<typeof OpikLogSchema>;
-
-  // Forbidden fields that indicate user data leakage
-  const FORBIDDEN_FIELDS = [
-    'raw_content',
-    'content',
-    'transcript',
-    'transcripts',
-    'user_goals',
-    'goals',
-    'emotional_feedback',
-    'emotion',
-    'user_id',
-    'email',
-    'name',
-    'username',
-    'device_id',
-    'ip_address',
-  ];
-
-  /**
-   * Validates that the request body doesn't contain forbidden user data fields
-   */
-  function validatePrivacyConstraints(body: unknown): { valid: boolean; error?: string } {
-    if (typeof body !== 'object' || body === null) {
-      return { valid: true };
-    }
-
-    const keys = Object.keys(body);
-    const forbiddenFound = keys.filter((key) =>
-      FORBIDDEN_FIELDS.includes(key.toLowerCase())
-    );
-
-    if (forbiddenFound.length > 0) {
-      return {
-        valid: false,
-        error: `Request contains forbidden fields: ${forbiddenFound.join(', ')}`,
-      };
-    }
-
-    return { valid: true };
-  }
-
-  /**
-   * Validates the security token header
-   */
-  function validateSecurityToken(req: VercelRequest): boolean {
-    const token = req.headers['x-signal-relay-token'];
-    const expectedToken = process.env.RELAY_TOKEN;
-
-    if (!expectedToken) {
-      console.error('RELAY_TOKEN environment variable not set');
-      return false;
-    }
-
-    const tokenValue = Array.isArray(token) ? token[0] : token;
-    return tokenValue === expectedToken;
-  }
 
   let opikClientPromise: Promise<Opik | null> | null = null;
 
@@ -213,14 +158,14 @@
     }
 
     // Validate security token
-    if (!validateSecurityToken(req)) {
+    if (!validateRelayToken(req)) {
       res.status(401).json({ error: 'Unauthorized: Invalid or missing relay token' });
       return;
     }
 
     try {
-      // Privacy validation: check for forbidden fields
-      const privacyCheck = validatePrivacyConstraints(req.body);
+      // Privacy validation: recursive check for forbidden fields
+      const privacyCheck = validatePrivacyConstraintsRecursive(req.body);
       if (!privacyCheck.valid) {
         res.status(400).json({ error: privacyCheck.error });
         return;

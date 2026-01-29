@@ -3,6 +3,9 @@
     "api/opik-log.ts": {
       "maxDuration": 10
     },
+    "api/feedback.ts": {
+      "maxDuration": 10
+    },
     "api/analyze.ts": {
       "maxDuration": 60
     }
