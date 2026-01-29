@@ -7,44 +7,69 @@
  * - Never logs raw user identifiers (hash only)
  */
 
-import { Opik } from 'opik';
+type OpikClient = {
+  trace: (args: any) => any;
+  flush: () => Promise<void> | void;
+};
 
-// Opik client configuration (validated at module load)
-const opikClient = (() => {
-  const projectName = process.env.OPIK_PROJECT_NAME;
-  const workspaceName = process.env.OPIK_WORKSPACE;
-  const apiKey = process.env.OPIK_API_KEY;
-  const apiUrl = process.env.OPIK_URL || 'https://www.comet.com/opik/api';
+// Opik client configuration (validated on first use)
+let opikClientPromise: Promise<OpikClient | null> | null = null;
 
-  // Log configuration status in development
-  if (process.env.NODE_ENV !== 'production') {
-    if (!apiKey) {
-      console.warn('[Opik] OPIK_API_KEY not set - Opik logging will be skipped');
-    }
-    if (!projectName) {
-      console.warn('[Opik] OPIK_PROJECT_NAME not set - traces may not route correctly');
-    }
-    if (!workspaceName) {
-      console.warn('[Opik] OPIK_WORKSPACE not set - traces may not route correctly');
-    }
-    if (apiKey && projectName && workspaceName) {
-      console.log(`[Opik] Configured: project=${projectName}, workspace=${workspaceName}`);
-    }
-  }
+async function getOpikClient(): Promise<OpikClient | null> {
+  if (opikClientPromise) return opikClientPromise;
 
-  // Initialize Opik client
-  try {
-    return new Opik({
-      apiKey: apiKey,
-      apiUrl: apiUrl,
-      projectName: projectName || 'Signal',
-      workspaceName: workspaceName,
-    });
-  } catch (error) {
-    console.error('[Opik] Failed to initialize Opik client:', error);
-    return null;
-  }
-})();
+  opikClientPromise = (async () => {
+    const projectName = process.env.OPIK_PROJECT_NAME;
+    const workspaceName =
+      process.env.OPIK_WORKSPACE_NAME ?? process.env.OPIK_WORKSPACE;
+    const apiKey = process.env.OPIK_API_KEY;
+    const apiUrl =
+      process.env.OPIK_URL_OVERRIDE ??
+      process.env.OPIK_URL ??
+      'https://www.comet.com/opik/api';
+
+    // Log configuration status in development
+    if (process.env.NODE_ENV !== 'production') {
+      if (!apiKey) {
+        console.warn('[Opik] OPIK_API_KEY not set - Opik logging will be skipped');
+      }
+      if (!projectName) {
+        console.warn('[Opik] OPIK_PROJECT_NAME not set - traces may not route correctly');
+      }
+      if (!workspaceName) {
+        console.warn('[Opik] OPIK_WORKSPACE not set - traces may not route correctly');
+      }
+      if (apiKey && projectName && workspaceName) {
+        console.log(`[Opik] Configured: project=${projectName}, workspace=${workspaceName}`);
+      }
+    }
+
+    if (!apiKey) return null;
+
+    try {
+      // Dynamic import avoids module-load crashes in serverless bundlers
+      const mod: any = await import('opik');
+      const OpikCtor = mod?.Opik ?? mod?.default?.Opik ?? mod?.default;
+      if (!OpikCtor) {
+        console.error('[Opik] Could not find Opik export in SDK package');
+        return null;
+      }
+
+      // Note: docs use apiUrl/apiKey/projectName/workspaceName
+      return new OpikCtor({
+        apiKey,
+        apiUrl,
+        projectName: projectName || 'Signal',
+        workspaceName,
+      }) as OpikClient;
+    } catch (error) {
+      console.error('[Opik] Failed to initialize Opik client:', error);
+      return null;
+    }
+  })();
+
+  return opikClientPromise;
+}
 
 /**
  * Helper to safely get metadata object for Opik spans/traces.
@@ -84,13 +109,8 @@ export async function logToOpik(
   contentType: 'video' | 'article',
   recallQuestionCount: number
 ): Promise<void> {
-  // Skip if Opik client is not initialized
-  if (!opikClient) {
-    if (process.env.NODE_ENV !== 'production') {
-      console.warn('[Opik] Client not initialized, skipping trace logging');
-    }
-    return;
-  }
+  const opikClient = await getOpikClient();
+  if (!opikClient) return;
 
   const TRIGGER_THRESHOLD = 0.7; // Signal's decision threshold
 
@@ -108,6 +128,7 @@ export async function logToOpik(
         'learning.value.score': learningValueScore,
       },
       metadata: sanitizeMetadata({
+        'signal.trace_id': traceId,
         'content.type': contentType,
         'trace.kind': 'signal_content_analysis',
         'user.id.hash': userIdHash, // Only hash, never raw user ID
@@ -116,7 +137,7 @@ export async function logToOpik(
 
     // Core scoring / content evaluation span
     // Owns: relevance.score, learning.value.score, concept.count
-    trace.span({
+    const scoreSpan = trace.span({
       name: 'score_content',
       type: 'general',
       input: {
@@ -134,10 +155,12 @@ export async function logToOpik(
         'user.id.hash': userIdHash, // Only hash, never raw user ID
       }),
     });
+    // Docs: explicitly end spans to ensure end_time is set
+    scoreSpan?.end?.();
 
     // Decision step span
     // Owns: decision, triggered (boolean), thresholds (not raw scores)
-    trace.span({
+    const decideSpan = trace.span({
       name: 'decide_action',
       type: 'general',
       input: {
@@ -155,10 +178,11 @@ export async function logToOpik(
         'threshold.learning': TRIGGER_THRESHOLD,
       }),
     });
+    decideSpan?.end?.();
 
     // Question generation span (optional)
     if (decision === 'triggered' && recallQuestionCount > 0) {
-      trace.span({
+      const qSpan = trace.span({
         name: 'generate_questions',
         type: 'general',
         input: {},
@@ -169,13 +193,14 @@ export async function logToOpik(
           'questions.count': recallQuestionCount,
         }),
       });
+      qSpan?.end?.();
     }
 
     // End the trace (SDK handles sending automatically)
     trace.end();
 
     // Flush to ensure data is sent (especially important for short-lived serverless functions)
-    await opikClient.flush();
+    await Promise.resolve(opikClient.flush());
 
     // Development-only success log
     if (process.env.NODE_ENV !== 'production') {

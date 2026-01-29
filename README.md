@@ -64,9 +64,9 @@ Both endpoints run entirely server-side (TypeScript/Node.js) and never persist u
    OPENAI_API_KEY=your-openai-api-key
    RELAY_TOKEN=your-secret-relay-token-here
    OPIK_API_KEY=your-opik-api-key
-   OPIK_URL=https://api.opik.ai/v1 (optional, defaults to this)
+   OPIK_URL_OVERRIDE=https://www.comet.com/opik/api (recommended for Opik Cloud)
    OPIK_PROJECT_NAME=signal (optional)
-   OPIK_WORKSPACE=your-workspace (optional)
+   OPIK_WORKSPACE_NAME=your-workspace (or use OPIK_WORKSPACE)
    ```
 
 4. **Redeploy after setting environment variables:**
@@ -81,9 +81,11 @@ Both endpoints run entirely server-side (TypeScript/Node.js) and never persist u
 | `OPENAI_API_KEY` | Yes | OpenAI API key for content analysis |
 | `RELAY_TOKEN` | Yes | Shared secret token for `/api/opik-log` authentication |
 | `OPIK_API_KEY` | Yes | Opik API key for trace submission |
-| `OPIK_URL` | No | Opik API base URL (defaults to `https://api.opik.ai/v1`) |
+| `OPIK_URL_OVERRIDE` | No | Opik API base URL override (Opik Cloud: `https://www.comet.com/opik/api`) |
+| `OPIK_URL` | No | Alternative name for Opik API base URL |
 | `OPIK_PROJECT_NAME` | No | Opik project name for traces |
-| `OPIK_WORKSPACE` | No | Opik workspace identifier |
+| `OPIK_WORKSPACE_NAME` | No | Opik workspace name |
+| `OPIK_WORKSPACE` | No | Alternative name for Opik workspace name |
 
 ## API Endpoints
 

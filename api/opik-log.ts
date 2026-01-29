@@ -1,5 +1,6 @@
   import { z } from 'zod';
   import type { VercelRequest, VercelResponse } from '@vercel/node';
+  import { Opik } from 'opik';
 
   // Request schema validation
   // One trace = one content item processed.
@@ -76,172 +77,129 @@
     return tokenValue === expectedToken;
   }
 
-  // Opik routing configuration (validated at module load)
-  const OPIK_CONFIG = (() => {
-    const projectName = process.env.OPIK_PROJECT_NAME;
-    const workspace = process.env.OPIK_WORKSPACE;
-    const apiKey = process.env.OPIK_API_KEY;
-    const opikUrl = process.env.OPIK_URL || 'https://api.opik.ai/v1';
+  let opikClientPromise: Promise<Opik | null> | null = null;
 
-    // Log configuration status in development
-    if (process.env.NODE_ENV !== 'production') {
-      if (!apiKey) {
-        console.warn('[Opik] OPIK_API_KEY not set - Opik logging will fail');
-      }
-      if (!projectName) {
-        console.warn('[Opik] OPIK_PROJECT_NAME not set - traces may not route correctly');
-      }
-      if (!workspace) {
-        console.warn('[Opik] OPIK_WORKSPACE not set - traces may not route correctly');
-      }
-    }
+  async function getOpikClient(): Promise<Opik | null> {
+    if (opikClientPromise) return opikClientPromise;
 
-    return { projectName, workspace, apiKey, opikUrl };
-  })();
+    opikClientPromise = (async () => {
+      const apiKey = process.env.OPIK_API_KEY;
+      const projectName = process.env.OPIK_PROJECT_NAME;
+      const workspaceName =
+        process.env.OPIK_WORKSPACE_NAME ?? process.env.OPIK_WORKSPACE;
+      const apiUrl =
+        process.env.OPIK_URL_OVERRIDE ??
+        process.env.OPIK_URL ??
+        'https://www.comet.com/opik/api';
 
-  /**
-   * Validates attributes are flat (no nested objects/arrays).
-   */
-  function validateAttributes(
-    attributes: Record<string, string | number | boolean | null>
-  ): Record<string, string | number | boolean | null> {
-    const validated: Record<string, string | number | boolean | null> = {};
-    for (const [key, value] of Object.entries(attributes)) {
-      if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-        // Skip nested objects - they're not supported by Opik
-        console.warn(`[Opik] Skipping nested attribute: ${key}`);
-        continue;
+      if (!apiKey) return null;
+
+      try {
+        return new Opik({
+          apiKey,
+          apiUrl,
+          projectName: projectName || 'Signal',
+          workspaceName,
+        });
+      } catch (e) {
+        console.error('[Opik] Failed to initialize client:', e);
+        return null;
       }
-      validated[key] = value;
-    }
-    return validated;
+    })();
+
+    return opikClientPromise;
   }
 
   /**
-   * Ensures non-zero span duration by offsetting timestamps.
-   */
-  function createSpanTimestamps(
-    baseTime: Date,
-    spanIndex: number
-  ): { start_time: string; end_time: string } {
-    const startOffsetMs = spanIndex * 2; // 2ms per span to ensure ordering
-    const startTime = new Date(baseTime.getTime() + startOffsetMs);
-    const endTime = new Date(startTime.getTime() + Math.max(1, spanIndex + 1)); // At least 1ms duration
-
-    return {
-      start_time: startTime.toISOString(),
-      end_time: endTime.toISOString(),
-    };
-  }
-
-  /**
-   * Sends span-based trace data to Opik via REST API.
-   * Converts the higher-level event payload into one or more spans.
+   * Send a trace + spans to Opik using the official TS SDK.
    */
   async function sendToOpik(data: OpikLogRequest): Promise<void> {
-    if (!OPIK_CONFIG.apiKey) {
-      throw new Error('OPIK_API_KEY environment variable not set');
+    const client = await getOpikClient();
+    if (!client) {
+      throw new Error('Opik client not configured (missing OPIK_API_KEY)');
     }
 
-    const spans: Array<{
-      name: string;
-      start_time: string;
-      end_time: string;
-      attributes: Record<string, string | number | boolean | null>;
-    }> = [];
+    const TRIGGER_THRESHOLD = 0.7;
 
-    const baseTime = new Date(data.timestamp);
-    const TRIGGER_THRESHOLD = 0.7; // Signal's decision threshold
-    let spanIndex = 0;
-
-    if (data.event_type === 'content_evaluation') {
-      // score_content span: owns scores and concept count
-      const scoreTimestamps = createSpanTimestamps(baseTime, spanIndex++);
-      spans.push({
-        name: 'score_content',
-        ...scoreTimestamps,
-        attributes: validateAttributes({
-          'event.type': data.event_type,
-          ...(data.content_type && { 'content.type': data.content_type }),
-          ...(typeof data.concept_count === 'number' && { 'concept.count': data.concept_count }),
-          ...(typeof data.relevance_score === 'number' && { 'relevance.score': data.relevance_score }),
-          ...(typeof data.learning_value_score === 'number' && {
-            'learning.value.score': data.learning_value_score,
-          }),
-          ...(data.user_id_hash && { 'user.id.hash': data.user_id_hash }),
-        }),
-      });
-
-      // decide_action span: owns decision, triggered boolean, thresholds (not raw scores)
-      const decideTimestamps = createSpanTimestamps(baseTime, spanIndex++);
-      spans.push({
-        name: 'decide_action',
-        ...decideTimestamps,
-        attributes: validateAttributes({
-          ...(data.decision && { decision: data.decision }),
-          ...(data.decision && { triggered: data.decision === 'triggered' }),
-          'threshold.relevance': TRIGGER_THRESHOLD,
-          'threshold.learning': TRIGGER_THRESHOLD,
-        }),
-      });
-    } else if (data.event_type === 'user_feedback') {
-      const feedbackTimestamps = createSpanTimestamps(baseTime, spanIndex++);
-      spans.push({
-        name: 'user_feedback',
-        ...feedbackTimestamps,
-        attributes: validateAttributes({
-          'event.type': data.event_type,
-          ...(data.user_feedback && { 'user.feedback': data.user_feedback }),
-          ...(data.user_id_hash && { 'user.id.hash': data.user_id_hash }),
-        }),
-      });
-    }
-
-    // Validate spans before sending
-    if (spans.length === 0) {
-      throw new Error('Trace must contain at least one span');
-    }
-
-    for (const span of spans) {
-      if (!span.name || span.name.trim().length === 0) {
-        throw new Error('Span name cannot be empty');
-      }
-    }
-
-    const tracePayload = {
-      trace_id: data.trace_id,
-      spans,
-      attributes: validateAttributes({
-        ...(data.content_type && { 'content.type': data.content_type }),
-        'trace.kind': 'signal_content_analysis',
-      }),
-      ...(OPIK_CONFIG.projectName && { project: OPIK_CONFIG.projectName }),
-      ...(OPIK_CONFIG.workspace && { workspace: OPIK_CONFIG.workspace }),
-    };
-
-    const response = await fetch(`${OPIK_CONFIG.opikUrl}/traces`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${OPIK_CONFIG.apiKey}`,
+    const trace = client.trace({
+      name: 'signal_observability_event',
+      input: {
+        event_type: data.event_type,
+        ...(data.content_type ? { 'content.type': data.content_type } : {}),
       },
-      body: JSON.stringify(tracePayload),
-      signal: AbortSignal.timeout(5000), // 5 second timeout for logging
+      output: {},
+      metadata: {
+        'signal.trace_id': data.trace_id,
+        ...(data.user_id_hash ? { 'user.id.hash': data.user_id_hash } : {}),
+      },
     });
 
-    if (!response.ok) {
-      const errorText = await response.text().catch(() => 'Unknown error');
-      const errorMessage = `Opik API error: ${response.status} ${errorText}`;
-      console.error(`[Opik] ${errorMessage}`);
-      throw new Error(errorMessage);
+    if (data.event_type === 'content_evaluation') {
+      const scoreSpan = trace.span({
+        name: 'score_content',
+        type: 'general',
+        input: {
+          ...(typeof data.concept_count === 'number'
+            ? { 'concept.count': data.concept_count }
+            : {}),
+        },
+        output: {
+          ...(typeof data.relevance_score === 'number'
+            ? { 'relevance.score': data.relevance_score }
+            : {}),
+          ...(typeof data.learning_value_score === 'number'
+            ? { 'learning.value.score': data.learning_value_score }
+            : {}),
+        },
+        metadata: {
+          'event.type': data.event_type,
+          ...(data.content_type ? { 'content.type': data.content_type } : {}),
+        },
+      });
+      scoreSpan.end();
+
+      const decideSpan = trace.span({
+        name: 'decide_action',
+        type: 'general',
+        input: {
+          ...(typeof data.relevance_score === 'number'
+            ? { 'relevance.score': data.relevance_score }
+            : {}),
+          ...(typeof data.learning_value_score === 'number'
+            ? { 'learning.value.score': data.learning_value_score }
+            : {}),
+        },
+        output: {
+          ...(data.decision ? { decision: data.decision } : {}),
+          ...(data.decision ? { triggered: data.decision === 'triggered' } : {}),
+        },
+        metadata: {
+          'threshold.relevance': TRIGGER_THRESHOLD,
+          'threshold.learning': TRIGGER_THRESHOLD,
+        },
+      });
+      decideSpan.end();
     }
 
-    // Development-only success log
-    if (process.env.NODE_ENV !== 'production') {
-      console.log(
-        `[Opik] Trace sent: ${data.trace_id} (${spans.length} span${spans.length !== 1 ? 's' : ''})`
-      );
+    if (data.event_type === 'user_feedback') {
+      const feedbackSpan = trace.span({
+        name: 'user_feedback',
+        type: 'general',
+        input: {},
+        output: {
+          ...(data.user_feedback ? { 'user.feedback': data.user_feedback } : {}),
+        },
+        metadata: {
+          'event.type': data.event_type,
+        },
+      });
+      feedbackSpan.end();
     }
+
+    trace.end();
+
+    // Serverless-safe: ensure upload before function exits.
+    await client.flush();
   }
 
   export default async function handler(
@@ -280,11 +238,8 @@
 
       const validatedData = validationResult.data;
 
-      // Send to Opik (async, don't block response)
-      sendToOpik(validatedData).catch((error) => {
-        // Log error server-side only (not in response)
-        console.error('Failed to send trace to Opik:', error.message);
-      });
+      // Send to Opik (awaited): this endpoint exists purely for logging, so reliability matters.
+      await sendToOpik(validatedData);
 
       // Return success immediately
       res.status(200).json({ ok: true });

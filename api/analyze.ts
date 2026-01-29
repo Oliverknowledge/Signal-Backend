@@ -112,19 +112,28 @@ export default async function handler(
 
     // Step 3: Log to Opik (async, non-blocking) using multi-span trace
     const contentType = getContentType(content_url);
-    logToOpik(
-      traceId,
-      analysisResult.relevance_score,
-      analysisResult.learning_value_score,
-      analysisResult.decision,
-      analysisResult.concepts.length,
-      user_id_hash,
-      contentType,
-      analysisResult.recall_questions.length
-    ).catch((error) => {
-      // Log error but don't block response
-      console.error('Opik logging failed:', error instanceof Error ? error.message : 'Unknown error');
-    });
+    // IMPORTANT (Vercel): if we don't await, the function can terminate before Opik uploads.
+    // Keep it fast: wait up to 2s, then continue the request.
+    try {
+      await Promise.race([
+        logToOpik(
+          traceId,
+          analysisResult.relevance_score,
+          analysisResult.learning_value_score,
+          analysisResult.decision,
+          analysisResult.concepts.length,
+          user_id_hash,
+          contentType,
+          analysisResult.recall_questions.length
+        ),
+        new Promise<void>((resolve) => setTimeout(resolve, 2000)),
+      ]);
+    } catch (error) {
+      console.error(
+        'Opik logging failed:',
+        error instanceof Error ? error.message : 'Unknown error'
+      );
+    }
 
     // Step 4: Return structured results
     res.status(200).json({
