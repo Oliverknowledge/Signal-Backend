@@ -33,21 +33,22 @@ export async function analyzeContent(
   const systemPrompt = `You are Signal’s analysis engine.
 Return ONLY valid JSON matching the provided schema. No markdown, no extra keys.
 
+CRITICAL: Concepts and questions MUST be derived ONLY from the CONTENT. If the content is about Minecraft, output Minecraft concepts; if about cooking, cooking concepts. Never invent topics from the user goal when they are not in the content.
+
 High standards:
-- Concepts must be specific and testable (e.g., "RAII", "std::unique_ptr ownership semantics"), not vague ("programming").
-- Prefer interview-relevant phrasing: include pitfalls, edge cases, and correctness when applicable.
-- Avoid duplicates and near-duplicates. Prefer 6–10 best concepts over long lists.
-- Scores must be calibrated (0–1). Don’t always output >0.8.
+- Concepts must be specific and testable (e.g. "redstone repeaters", "biome generation")—must come from the CONTENT only, not vague ("gaming").
+- Avoid duplicates. Prefer 6–10 concepts that actually appear in the content.
+- relevance_score and learning_value_score must reflect THIS content only; if content and goal are unrelated, score low (0–1).
 - If you output MCQs, they MUST have exactly 4 options and exactly 1 correct answer.`;
 
-  const userPrompt = `Analyze the content against the user's goal and prior knowledge.
+  const userPrompt = `Analyze the CONTENT below against the user's goal and prior knowledge. Concepts and questions must come ONLY from the CONTENT—do not use the goal to invent topics that aren't in the content.
 
 GOAL (short): ${goalDescription}
 
 KNOWN (avoid reteaching): ${knownConcepts.join(", ") || "None"}
 WEAK (prioritize): ${weakConcepts.join(", ") || "None"}
 
-CONTENT (may be long; focus on the core teachable parts):
+CONTENT (this is the actual transcript/text—extract concepts and questions from it only):
 ${content}
 
 Return JSON in this exact schema (no extra fields):
@@ -62,16 +63,11 @@ Return JSON in this exact schema (no extra fields):
 }
 
 Rules:
-- concepts: 6–10 items, unique, specific, noun-phrases.
-  - Include at least 2 from WEAK if present.
-  - Include at least 2 "pitfall/edge-case" concepts if applicable.
-- relevance_score: alignment of THIS content to GOAL (0..1).
-- learning_value_score: how much the user can learn given KNOWN/WEAK (0..1).
-- recall_questions:
-  - ONLY include questions if BOTH scores >= 0.7. Otherwise return [].
-  - If triggered, return EXACTLY 4 questions: 2 open + 2 mcq.
-  - Questions must test concepts found in the content.
-  - MCQs: 4 plausible options, one correct_index (0..3). No "All of the above". No trick answers.`;
+- concepts: 6–10 items that actually appear or are clearly discussed in the CONTENT. Same topic as the content (e.g. if content is about Minecraft, concepts must be Minecraft-related).
+  - Only include concepts from WEAK if they actually appear in the content; otherwise ignore WEAK for concept list.
+- relevance_score: how well THIS content aligns with the GOAL (0..1). If content and goal are unrelated (e.g. Minecraft content vs "Learn C++"), score low.
+- learning_value_score: how much the user can learn from THIS content given KNOWN/WEAK (0..1).
+- recall_questions: ONLY if BOTH scores >= 0.7. If triggered, EXACTLY 4 questions (2 open, 2 mcq) that test concepts FROM THE CONTENT. Do not ask about topics not in the content. MCQs: 4 options, one correct_index (0..3).`;
 
   try {
     const completion = await openai.chat.completions.create({

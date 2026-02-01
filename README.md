@@ -62,6 +62,7 @@ Both endpoints run entirely server-side (TypeScript/Node.js) and never persist u
 
    ```
    OPENAI_API_KEY=your-openai-api-key
+   RAPIDAPI_KEY=your-rapidapi-key
    RELAY_TOKEN=your-secret-relay-token-here
    OPIK_API_KEY=your-opik-api-key
    OPIK_URL_OVERRIDE=https://www.comet.com/opik/api (recommended for Opik Cloud)
@@ -79,7 +80,8 @@ Both endpoints run entirely server-side (TypeScript/Node.js) and never persist u
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `OPENAI_API_KEY` | Yes | OpenAI API key for content analysis |
-| `RELAY_TOKEN` | Yes | Shared secret token for `/api/opik-log` authentication |
+| `RAPIDAPI_KEY` | Yes | RapidAPI key for YouTube transcript fetching |
+| `RELAY_TOKEN` | Yes | Shared secret token for `/api/opik-log` and `/api/feedback` authentication |
 | `OPIK_API_KEY` | Yes | Opik API key for trace submission |
 | `OPIK_URL_OVERRIDE` | No | Opik API base URL override (Opik Cloud: `https://www.comet.com/opik/api`) |
 | `OPIK_URL` | No | Alternative name for Opik API base URL |
@@ -308,6 +310,28 @@ Only numeric, boolean, and string metrics are accepted. No user data is ever log
    - Creates trace with UUID
    - Sends only anonymized metrics
    - Never blocks API response
+
+## Troubleshooting
+
+### `FUNCTION_INVOCATION_FAILED` (Vercel)
+
+This usually means the serverless function crashed (uncaught exception or timeout).
+
+1. **Check which route fails**  
+   Call `/api/analyze`, `/api/feedback`, and `/api/opik-log` separately to see which returns this error.
+
+2. **Environment variables**  
+   In Vercel → Project → Settings → Environment Variables, ensure:
+   - `OPENAI_API_KEY` – required for `/api/analyze`
+   - `RAPIDAPI_KEY` – required for YouTube transcripts in `/api/analyze`
+   - `RELAY_TOKEN` – required for `/api/opik-log` and `/api/feedback`
+   - `OPIK_API_KEY` – optional for Opik logging; if missing, logging is skipped (no crash)
+
+3. **Logs**  
+   In Vercel → Project → Deployments → select a deployment → Functions → click the failing function and check **Logs** for the real error (e.g. missing env, timeout, OpenAI/RapidAPI error).
+
+4. **Timeouts**  
+   `api/analyze` has `maxDuration: 60`; content fetch has 30s and OpenAI has 60s. Very long content or slow APIs can cause timeouts.
 
 ## Development
 

@@ -4,6 +4,7 @@
   "description": "Server-side Opik relay service for Signal iOS app observability",
   "private": true,
   "scripts": {
+    "start": "vercel dev --listen 3000",
     "deploy": "vercel --prod"
   },
   "dependencies": {

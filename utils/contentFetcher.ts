@@ -74,10 +74,7 @@ async function fetchYouTubeTranscript(videoId: string): Promise<string> {
   if (!apiKey) {
     throw new Error("RAPIDAPI_KEY not set in environment");
   }
-  console.log(`Fetching YouTube transcript for video ${videoId}`);
-  console.log(`API key: ${apiKey}`);
   const url = `https://youtube-transcript3.p.rapidapi.com/api/transcript?videoId=${videoId}`;
-  console.log(`URL: ${url}`);
   try {
     const response = await fetch(url, {
       headers: {

@@ -6,6 +6,9 @@
     "api/feedback.ts": {
       "maxDuration": 10
     },
+    "api/recall.ts": {
+      "maxDuration": 10
+    },
     "api/analyze.ts": {
       "maxDuration": 60
     }
