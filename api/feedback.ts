@@ -3,7 +3,17 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { Opik } from 'opik';
 import { validateRelayToken } from '../utils/relayAuth';
 import { validatePrivacyConstraintsRecursive } from '../utils/privacy';
-import { persistFeedback, type StoredFeedback } from '../utils/feedbackStore';
+import {
+  persistFeedback,
+  type StoredFeedback,
+  ALLOWED_FEEDBACK_REASONS,
+} from '../utils/feedbackStore';
+
+// Allowed structured reason codes only (no free text)
+const allowedReasonSet = new Set(ALLOWED_FEEDBACK_REASONS);
+const reasonSchema = z
+  .string()
+  .refine((r) => allowedReasonSet.has(r as (typeof ALLOWED_FEEDBACK_REASONS)[number]));
 
 // --- Request schema (Zod) ---
 const FeedbackSchema = z
@@ -13,6 +23,7 @@ const FeedbackSchema = z
     feedback: z.enum(['useful', 'not_useful']),
     recall_correct: z.number().int().min(0).optional(),
     recall_total: z.number().int().min(1).optional(),
+    reasons: z.array(reasonSchema).max(10).optional(),
     timestamp: z.string().datetime(),
   })
   .refine(
@@ -74,9 +85,17 @@ async function logFeedbackToOpik(data: FeedbackRequest): Promise<void> {
       ? recallCorrect / recallTotal
       : undefined;
 
+  const reasonsPayload =
+    data.reasons != null && data.reasons.length > 0
+      ? { 'feedback.reasons': data.reasons.join(',') }
+      : {};
+
   try {
+    // Same trace id as content analysis so this becomes one trace per content item
     const trace = client.trace({
-      name: 'signal_feedback',
+      id: data.trace_id,
+      name: 'signal_content_analysis',
+      startTime: startTime,
       input: {
         'event.type': 'user_feedback',
         feedback: data.feedback,
@@ -84,6 +103,7 @@ async function logFeedbackToOpik(data: FeedbackRequest): Promise<void> {
         ...(recallCorrect != null && { 'recall.correct': recallCorrect }),
         ...(recallTotal != null && { 'recall.total': recallTotal }),
         ...(recallRatio != null && { 'recall.ratio': recallRatio }),
+        ...reasonsPayload,
         'trace.kind': 'signal_content_analysis',
       },
       output: {},
@@ -95,6 +115,7 @@ async function logFeedbackToOpik(data: FeedbackRequest): Promise<void> {
         ...(recallCorrect != null && { 'recall.correct': recallCorrect }),
         ...(recallTotal != null && { 'recall.total': recallTotal }),
         ...(recallRatio != null && { 'recall.ratio': recallRatio }),
+        ...reasonsPayload,
         'trace.kind': 'signal_content_analysis',
       },
     });
@@ -110,6 +131,7 @@ async function logFeedbackToOpik(data: FeedbackRequest): Promise<void> {
         ...(recallCorrect != null && { 'recall.correct': recallCorrect }),
         ...(recallTotal != null && { 'recall.total': recallTotal }),
         ...(recallRatio != null && { 'recall.ratio': recallRatio }),
+        ...reasonsPayload,
         'trace.kind': 'signal_content_analysis',
       },
       output: {},
@@ -120,6 +142,7 @@ async function logFeedbackToOpik(data: FeedbackRequest): Promise<void> {
         ...(recallCorrect != null && { 'recall.correct': recallCorrect }),
         ...(recallTotal != null && { 'recall.total': recallTotal }),
         ...(recallRatio != null && { 'recall.ratio': recallRatio }),
+        ...reasonsPayload,
         'trace.kind': 'signal_content_analysis',
       },
     });
@@ -169,6 +192,7 @@ export default async function handler(
     feedback: data.feedback,
     ...(data.recall_correct != null && { recall_correct: data.recall_correct }),
     ...(data.recall_total != null && { recall_total: data.recall_total }),
+    ...(data.reasons != null && data.reasons.length > 0 && { reasons: data.reasons }),
     timestamp: data.timestamp,
   };
   persistFeedback(entry);

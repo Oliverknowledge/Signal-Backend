@@ -9,6 +9,9 @@
     "api/recall.ts": {
       "maxDuration": 10
     },
+    "api/grade-recall.ts": {
+      "maxDuration": 30
+    },
     "api/analyze.ts": {
       "maxDuration": 60
     }

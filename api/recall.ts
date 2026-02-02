@@ -58,15 +58,17 @@ async function logRecallToOpik(data: RecallRequest): Promise<void> {
   const recallRatio = data.recall_total > 0 ? data.recall_correct / data.recall_total : 0;
 
   try {
+    // Same trace id as content analysis so this becomes one trace per content item
     const trace = client.trace({
-      name: 'signal_recall',
+      id: data.trace_id,
+      name: 'signal_content_analysis',
+      startTime: new Date(),
       input: {
         'event.type': 'recall_completed',
         'content.id': data.content_id,
         'recall.correct': data.recall_correct,
         'recall.total': data.recall_total,
         'recall.ratio': recallRatio,
-        'trace.kind': 'signal_content_analysis',
       },
       output: {},
       metadata: {
@@ -76,7 +78,6 @@ async function logRecallToOpik(data: RecallRequest): Promise<void> {
         'recall.correct': data.recall_correct,
         'recall.total': data.recall_total,
         'recall.ratio': recallRatio,
-        'trace.kind': 'signal_content_analysis',
       },
     });
 

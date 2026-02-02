@@ -115,9 +115,11 @@ export async function logToOpik(
   const TRIGGER_THRESHOLD = 0.7; // Signal's decision threshold
 
   try {
-    // Create trace using Opik SDK
+    // Create trace using our UUID so recall/feedback can add spans to the same trace
     const trace = opikClient.trace({
+      id: traceId,
       name: 'signal_content_analysis',
+      startTime: new Date(),
       input: {
         'content.type': contentType,
         'trace.kind': 'signal_content_analysis',
