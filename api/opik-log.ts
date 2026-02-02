@@ -1,8 +1,8 @@
   import { z } from 'zod';
   import type { VercelRequest, VercelResponse } from '@vercel/node';
   import { Opik } from 'opik';
-  import { validateRelayToken } from '../utils/relayAuth';
-  import { validatePrivacyConstraintsRecursive } from '../utils/privacy';
+  import { validateRelayToken } from '../utils/relayAuth.js';
+  import { validatePrivacyConstraintsRecursive } from '../utils/privacy.js';
 
   // Request schema validation
   // One trace = one content item processed.

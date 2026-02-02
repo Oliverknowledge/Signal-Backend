@@ -1,13 +1,13 @@
 import { z } from 'zod';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { Opik } from 'opik';
-import { validateRelayToken } from '../utils/relayAuth';
-import { validatePrivacyConstraintsRecursive } from '../utils/privacy';
+import { validateRelayToken } from '../utils/relayAuth.js';
+import { validatePrivacyConstraintsRecursive } from '../utils/privacy.js';
 import {
   persistFeedback,
   type StoredFeedback,
   ALLOWED_FEEDBACK_REASONS,
-} from '../utils/feedbackStore';
+} from '../utils/feedbackStore.js';
 
 // Allowed structured reason codes only (no free text)
 const allowedReasonSet = new Set(ALLOWED_FEEDBACK_REASONS);

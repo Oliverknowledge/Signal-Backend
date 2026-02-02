@@ -6,8 +6,8 @@
 
 import { z } from 'zod';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { validateRelayToken } from '../utils/relayAuth';
-import { validatePrivacyConstraintsRecursive } from '../utils/privacy';
+import { validateRelayToken } from '../utils/relayAuth.js';
+import { validatePrivacyConstraintsRecursive } from '../utils/privacy.js';
 import { Opik } from 'opik';
 
 const RecallSchema = z.object({

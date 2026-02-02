@@ -9,9 +9,9 @@
 import { z } from 'zod';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { randomUUID } from 'crypto';
-import { fetchContent } from '../utils/contentFetcher';
-import { analyzeContent } from '../utils/openaiClient';
-import { logToOpik } from '../utils/opikLogger';
+import { fetchContent } from '../utils/contentFetcher.js';
+import { analyzeContent } from '../utils/openaiClient.js';
+import { logToOpik } from '../utils/opikLogger.js';
 
 // Request schema validation
 const AnalyzeRequestSchema = z.object({

@@ -6,8 +6,8 @@
 
 import { z } from 'zod';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { validateRelayToken } from '../utils/relayAuth';
-import { validatePrivacyConstraintsRecursive } from '../utils/privacy';
+import { validateRelayToken } from '../utils/relayAuth.js';
+import { validatePrivacyConstraintsRecursive } from '../utils/privacy.js';
 import OpenAI from 'openai';
 import { Opik } from 'opik';
 
