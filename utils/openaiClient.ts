@@ -9,6 +9,18 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+export type InterventionPolicy = "focused" | "aggressive";
+
+const DEFAULT_INTERVENTION_POLICY: InterventionPolicy = "focused";
+const TRIGGER_THRESHOLDS: Record<InterventionPolicy, number> = {
+  focused: 0.75,
+  aggressive: 0.6,
+};
+
+function normalizePolicy(value?: string): InterventionPolicy {
+  return value === "aggressive" ? "aggressive" : "focused";
+}
+
 export interface AnalysisResult {
   concepts: string[];
   relevance_score: number;
@@ -28,8 +40,12 @@ export async function analyzeContent(
   content: string,
   goalDescription: string,
   knownConcepts: string[],
-  weakConcepts: string[]
+  weakConcepts: string[],
+  interventionPolicy: InterventionPolicy = DEFAULT_INTERVENTION_POLICY
 ): Promise<AnalysisResult> {
+  const policy = normalizePolicy(interventionPolicy);
+  const triggerThreshold = TRIGGER_THRESHOLDS[policy];
+
   const systemPrompt = `You are Signal’s analysis engine.
 Return ONLY valid JSON matching the provided schema. No markdown, no extra keys.
 
@@ -67,7 +83,7 @@ Rules:
   - Only include concepts from WEAK if they actually appear in the content; otherwise ignore WEAK for concept list.
 - relevance_score: how well THIS content aligns with the GOAL (0..1). If content and goal are unrelated (e.g. Minecraft content vs "Learn C++"), score low.
 - learning_value_score: how much the user can learn from THIS content given KNOWN/WEAK (0..1).
-- recall_questions: ONLY if BOTH scores >= 0.7. If triggered, EXACTLY 4 questions (2 open, 2 mcq) that test concepts FROM THE CONTENT. Do not ask about topics not in the content. MCQs: 4 options, one correct_index (0..3).`;
+- recall_questions: ONLY if BOTH scores >= ${triggerThreshold}. If triggered, EXACTLY 4 questions (2 open, 2 mcq) that test concepts FROM THE CONTENT. Do not ask about topics not in the content. MCQs: 4 options, one correct_index (0..3).`;
 
   try {
     const completion = await openai.chat.completions.create({
@@ -90,9 +106,9 @@ Rules:
     const relevance_score = clamp01(Number(parsed.relevance_score));
     const learning_value_score = clamp01(Number(parsed.learning_value_score));
 
-    // Server is source of truth for decision
+    // Server is source of truth for decision (policy-adjusted thresholds).
     const decision: "triggered" | "ignored" =
-      relevance_score >= 0.7 && learning_value_score >= 0.7
+      relevance_score >= triggerThreshold && learning_value_score >= triggerThreshold
         ? "triggered"
         : "ignored";
 

@@ -12,6 +12,13 @@ type OpikClient = {
   flush: () => Promise<void> | void;
 };
 
+type InterventionPolicy = 'focused' | 'aggressive';
+
+const TRIGGER_THRESHOLDS: Record<InterventionPolicy, number> = {
+  focused: 0.75,
+  aggressive: 0.6,
+};
+
 // Opik client configuration (validated on first use)
 let opikClientPromise: Promise<OpikClient | null> | null = null;
 
@@ -107,12 +114,13 @@ export async function logToOpik(
   conceptCount: number,
   userIdHash: string,
   contentType: 'video' | 'article',
+  interventionPolicy: InterventionPolicy,
   recallQuestionCount: number
 ): Promise<void> {
   const opikClient = await getOpikClient();
   if (!opikClient) return;
 
-  const TRIGGER_THRESHOLD = 0.7; // Signal's decision threshold
+  const triggerThreshold = TRIGGER_THRESHOLDS[interventionPolicy];
 
   try {
     // Create trace using our UUID so recall/feedback can add spans to the same trace
@@ -134,6 +142,7 @@ export async function logToOpik(
         'content.type': contentType,
         'trace.kind': 'signal_content_analysis',
         'user.id.hash': userIdHash, // Only hash, never raw user ID
+        'intervention.policy': interventionPolicy,
       }),
     });
 
@@ -176,8 +185,8 @@ export async function logToOpik(
       metadata: sanitizeMetadata({
         decision,
         triggered: decision === 'triggered',
-        'threshold.relevance': TRIGGER_THRESHOLD,
-        'threshold.learning': TRIGGER_THRESHOLD,
+        'threshold.relevance': triggerThreshold,
+        'threshold.learning': triggerThreshold,
       }),
     });
     decideSpan?.end?.();

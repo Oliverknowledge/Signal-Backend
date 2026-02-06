@@ -19,6 +19,7 @@ const AnalyzeRequestSchema = z.object({
   user_id_hash: z.string().min(1),
   goal_id: z.string().min(1),
   goal_description: z.string().min(1),
+  intervention_policy: z.enum(['focused', 'aggressive']).default('focused'),
   known_concepts: z.array(z.string()).default([]),
   weak_concepts: z.array(z.string()).default([]),
 });
@@ -59,6 +60,7 @@ export default async function handler(
       user_id_hash,
       goal_id,
       goal_description,
+      intervention_policy,
       known_concepts,
       weak_concepts,
     } = validationResult.data;
@@ -95,7 +97,7 @@ export default async function handler(
     let analysisResult;
     try {
       analysisResult = await Promise.race([
-        analyzeContent(content, goal_description, known_concepts, weak_concepts),
+        analyzeContent(content, goal_description, known_concepts, weak_concepts, intervention_policy),
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error('Analysis timeout')), 60000)
         ),
@@ -121,6 +123,7 @@ export default async function handler(
       analysisResult.concepts.length,
       user_id_hash,
       contentType,
+      intervention_policy,
       analysisResult.recall_questions.length
     ).catch((error) => {
       console.error('Opik logging failed:', error instanceof Error ? error.message : 'Unknown error');

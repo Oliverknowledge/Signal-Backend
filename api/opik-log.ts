@@ -15,6 +15,7 @@
     relevance_score: z.number().min(0).max(1).optional(),
     learning_value_score: z.number().min(0).max(1).optional(),
     decision: z.enum(['triggered', 'ignored']).optional(),
+    decision_confidence: z.enum(['high', 'borderline', 'low']).optional(),
     user_feedback: z.enum(['useful', 'not_useful']).nullable().optional(),
     timestamp: z.string().datetime(),
     user_id_hash: z.string().min(1).optional(),
@@ -76,6 +77,8 @@
       metadata: {
         'signal.trace_id': data.trace_id,
         ...(data.user_id_hash ? { 'user.id.hash': data.user_id_hash } : {}),
+        ...(data.decision_confidence ? { 'decision.confidence': data.decision_confidence } : {}),
+        ...(data.decision_confidence ? { 'decision.confidence.tag': `decision_confidence:${data.decision_confidence}` } : {}),
       },
     });
 
@@ -121,6 +124,8 @@
         metadata: {
           'threshold.relevance': TRIGGER_THRESHOLD,
           'threshold.learning': TRIGGER_THRESHOLD,
+          ...(data.decision_confidence ? { 'decision.confidence': data.decision_confidence } : {}),
+          ...(data.decision_confidence ? { 'decision.confidence.tag': `decision_confidence:${data.decision_confidence}` } : {}),
         },
       });
       decideSpan.end();
