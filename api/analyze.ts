@@ -10,8 +10,31 @@ import { z } from 'zod';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { randomUUID } from 'crypto';
 import { fetchContent } from '../utils/contentFetcher.js';
-import { analyzeContent, generateBridgeQuestion } from '../utils/openaiClient.js';
+import { analyzeContent, generateBridgeQuestion, type LearningMode } from '../utils/openaiClient.js';
 import { logToOpik } from '../utils/opikLogger.js';
+
+function normalizeLearningMode(value?: string): LearningMode {
+  if (!value) return 'general_learning';
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[-\s]+/g, '_');
+
+  if (normalized === 'interview_prep' || normalized === 'interview') return 'interview_prep';
+  if (
+    normalized === 'assessment_exam_prep' ||
+    normalized === 'assessment_prep' ||
+    normalized === 'assessment' ||
+    normalized === 'exam_prep' ||
+    normalized === 'examprep' ||
+    normalized === 'exam'
+  ) return 'assessment_exam_prep';
+  if (normalized === 'general_learning' || normalized === 'general' || normalized === 'casual') {
+    return 'general_learning';
+  }
+  if (normalized === 'deep_focus' || normalized === 'deepfocus') return 'interview_prep';
+  return 'general_learning';
+}
 
 // Request schema validation
 const LibraryDigestItemSchema = z.object({
@@ -27,6 +50,7 @@ const AnalyzeRequestSchema = z.object({
   goal_id: z.string().min(1),
   goal_description: z.string().min(1),
   intervention_policy: z.enum(['focused', 'aggressive']).default('focused'),
+  learning_mode: z.string().optional(),
   known_concepts: z.array(z.string()).default([]),
   weak_concepts: z.array(z.string()).default([]),
   library_digest: z.array(LibraryDigestItemSchema).optional(),
@@ -157,10 +181,12 @@ export default async function handler(
       goal_id,
       goal_description,
       intervention_policy,
+      learning_mode,
       known_concepts,
       weak_concepts,
       library_digest,
     } = validationResult.data;
+    const normalizedLearningMode = normalizeLearningMode(learning_mode);
 
     // Generate trace ID for this analysis
     const traceId = randomUUID();
@@ -194,7 +220,14 @@ export default async function handler(
     let analysisResult;
     try {
       analysisResult = await Promise.race([
-        analyzeContent(content, goal_description, known_concepts, weak_concepts, intervention_policy),
+        analyzeContent(
+          content,
+          goal_description,
+          known_concepts,
+          weak_concepts,
+          intervention_policy,
+          normalizedLearningMode
+        ),
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error('Analysis timeout')), 60000)
         ),

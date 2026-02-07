@@ -1,6 +1,6 @@
 /**
  * OpenAI client for Signal AI analysis
- * Extracts concepts, scores relevance/learning value, and generates recall questions
+ * Extracts concepts, scores relevance/learning value, and generates recall questions.
  */
 
 import OpenAI from "openai";
@@ -10,15 +10,90 @@ const openai = new OpenAI({
 });
 
 export type InterventionPolicy = "focused" | "aggressive";
+export type LearningMode = "interview_prep" | "assessment_exam_prep" | "general_learning";
 
 const DEFAULT_INTERVENTION_POLICY: InterventionPolicy = "focused";
+const DEFAULT_LEARNING_MODE: LearningMode = "general_learning";
 const TRIGGER_THRESHOLDS: Record<InterventionPolicy, number> = {
   focused: 0.75,
   aggressive: 0.6,
 };
 
+type QuestionPlan = {
+  mode: LearningMode;
+  modeLabel: string;
+  openTarget: number;
+  mcqTarget: number;
+  difficultyHint: string;
+  styleHint: string;
+  modeRules: string;
+  ordering: "open_first" | "balanced" | "mcq_first";
+};
+
 function normalizePolicy(value?: string): InterventionPolicy {
   return value === "aggressive" ? "aggressive" : "focused";
+}
+
+function normalizeLearningMode(value?: string): LearningMode {
+  if (!value) return DEFAULT_LEARNING_MODE;
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[-\s]+/g, "_");
+
+  if (normalized === "interview_prep" || normalized === "interview") return "interview_prep";
+  if (
+    normalized === "assessment_exam_prep" ||
+    normalized === "assessment_prep" ||
+    normalized === "assessment" ||
+    normalized === "exam_prep" ||
+    normalized === "examprep" ||
+    normalized === "exam"
+  ) return "assessment_exam_prep";
+  if (normalized === "general_learning" || normalized === "general" || normalized === "casual") {
+    return "general_learning";
+  }
+  // Legacy mapping.
+  if (normalized === "deep_focus" || normalized === "deepfocus") return "interview_prep";
+  return "general_learning";
+}
+
+function questionPlanForMode(mode: LearningMode): QuestionPlan {
+  switch (mode) {
+    case "interview_prep":
+      return {
+        mode,
+        modeLabel: "Interview Prep",
+        openTarget: 3,
+        mcqTarget: 1,
+        difficultyHint: "real-world and explanation-heavy",
+        styleHint: "spoken reasoning, clarity, and confidence under pressure",
+        modeRules: "Prefer prompts that start with 'Explain', 'Walk me through', or 'Why would you choose'.",
+        ordering: "open_first",
+      };
+    case "assessment_exam_prep":
+      return {
+        mode,
+        modeLabel: "Assessment / Exam Prep",
+        openTarget: 1,
+        mcqTarget: 3,
+        difficultyHint: "exam-style and accuracy-focused",
+        styleHint: "clear right/wrong phrasing with terminology checks",
+        modeRules: "Prefer objective prompts like 'Which of these is true?' and pattern/definition checks.",
+        ordering: "mcq_first",
+      };
+    default:
+      return {
+        mode: "general_learning",
+        modeLabel: "General Learning",
+        openTarget: 2,
+        mcqTarget: 2,
+        difficultyHint: "light-to-moderate",
+        styleHint: "balanced and supportive with lower pressure",
+        modeRules: "Keep a balanced mix and avoid overly high-pressure framing.",
+        ordering: "balanced",
+      };
+  }
 }
 
 export interface AnalysisResult {
@@ -46,36 +121,45 @@ export async function analyzeContent(
   goalDescription: string,
   knownConcepts: string[],
   weakConcepts: string[],
-  interventionPolicy: InterventionPolicy = DEFAULT_INTERVENTION_POLICY
+  interventionPolicy: InterventionPolicy = DEFAULT_INTERVENTION_POLICY,
+  learningMode: string = DEFAULT_LEARNING_MODE
 ): Promise<AnalysisResult> {
   const policy = normalizePolicy(interventionPolicy);
+  const mode = normalizeLearningMode(learningMode);
+  const questionPlan = questionPlanForMode(mode);
   const triggerThreshold = TRIGGER_THRESHOLDS[policy];
+  const totalTargetQuestions = questionPlan.openTarget + questionPlan.mcqTarget;
 
-  const systemPrompt = `You are Signal’s analysis engine.
+  const systemPrompt = `You are Signal's analysis engine.
 Return ONLY valid JSON matching the provided schema. No markdown, no extra keys.
 
 CRITICAL: Concepts and questions MUST be derived ONLY from the CONTENT. If the content is about Minecraft, output Minecraft concepts; if about cooking, cooking concepts. Never invent topics from the user goal when they are not in the content.
 
 High standards:
-- Concepts must be specific and testable (e.g. "redstone repeaters", "biome generation")—must come from the CONTENT only, not vague ("gaming").
-- Avoid duplicates. Prefer 6–10 concepts that actually appear in the content.
-- relevance_score and learning_value_score must reflect THIS content only; if content and goal are unrelated, score low (0–1).
-- If you output MCQs, they MUST have exactly 4 options and exactly 1 correct answer.`;
+- Concepts must be specific and testable (e.g. "redstone repeaters", "biome generation"), from the CONTENT only, not vague ("gaming").
+- Avoid duplicates. Prefer 6-10 concepts that actually appear in the content.
+- relevance_score and learning_value_score must reflect THIS content only; if content and goal are unrelated, score low (0-1).
+- If you output MCQs, they MUST have exactly 4 options and exactly 1 correct answer.
+- Honor the requested LEARNING MODE profile for recall question difficulty and style.`;
 
-  const userPrompt = `Analyze the CONTENT below against the user's goal and prior knowledge. Concepts and questions must come ONLY from the CONTENT—do not use the goal to invent topics that aren't in the content.
+  const userPrompt = `Analyze the CONTENT below against the user's goal and prior knowledge. Concepts and questions must come ONLY from the CONTENT.
 
 GOAL (short): ${goalDescription}
+LEARNING MODE: ${questionPlan.modeLabel}
+MODE DIFFICULTY: ${questionPlan.difficultyHint}
+MODE STYLE: ${questionPlan.styleHint}
+MODE RULES: ${questionPlan.modeRules}
 
 KNOWN (avoid reteaching): ${knownConcepts.join(", ") || "None"}
 WEAK (prioritize): ${weakConcepts.join(", ") || "None"}
 
-CONTENT (this is the actual transcript/text—extract concepts and questions from it only):
+CONTENT (this is the actual transcript/text; extract concepts and questions from it only):
 ${content}
 
 Return JSON in this exact schema (no extra fields):
 {
   "concepts": ["string"],
-  "relevance_score": number,        // 0..1
+  "relevance_score": number,         // 0..1
   "learning_value_score": number,    // 0..1
   "recall_questions": [
     { "type": "open", "question": "string" },
@@ -84,11 +168,16 @@ Return JSON in this exact schema (no extra fields):
 }
 
 Rules:
-- concepts: 6–10 items that actually appear or are clearly discussed in the CONTENT. Same topic as the content (e.g. if content is about Minecraft, concepts must be Minecraft-related).
+- concepts: 6-10 items clearly present in the CONTENT.
   - Only include concepts from WEAK if they actually appear in the content; otherwise ignore WEAK for concept list.
-- relevance_score: how well THIS content aligns with the GOAL (0..1). If content and goal are unrelated (e.g. Minecraft content vs "Learn C++"), score low.
+- relevance_score: how well THIS content aligns with the GOAL (0..1).
 - learning_value_score: how much the user can learn from THIS content given KNOWN/WEAK (0..1).
-- recall_questions: ONLY if BOTH scores >= ${triggerThreshold}. If triggered, EXACTLY 4 questions (2 open, 2 mcq) that test concepts FROM THE CONTENT. Do not ask about topics not in the content. MCQs: 4 options, one correct_index (0..3).`;
+- recall_questions: ONLY if BOTH scores >= ${triggerThreshold}.
+- If triggered, return EXACTLY ${totalTargetQuestions} questions with this mix:
+  - open questions: ${questionPlan.openTarget}
+  - mcq questions: ${questionPlan.mcqTarget}
+- Use ${questionPlan.difficultyHint} difficulty and ${questionPlan.styleHint} wording.
+- Do not ask about topics not present in the content.`;
 
   try {
     const completion = await openai.chat.completions.create({
@@ -107,38 +196,23 @@ Rules:
 
     const parsed = JSON.parse(responseText);
 
-    // Normalize scores
     const relevance_score = clamp01(Number(parsed.relevance_score));
     const learning_value_score = clamp01(Number(parsed.learning_value_score));
 
-    // Server is source of truth for decision (policy-adjusted thresholds).
+    // Server is source of truth for the final trigger decision.
     const decision: "triggered" | "ignored" =
       relevance_score >= triggerThreshold && learning_value_score >= triggerThreshold
         ? "triggered"
         : "ignored";
 
-    // Concepts: sanitize + dedupe + cap + remove too-vague
     const rawConcepts = Array.isArray(parsed.concepts) ? parsed.concepts : [];
     const concepts = normalizeConcepts(rawConcepts, 10);
 
-    // Questions: only if triggered, then normalize + enforce minimum count via fallback
-    let recall_questions: AnalysisResult["recall_questions"] =
-      decision === "triggered" && Array.isArray(parsed.recall_questions)
-        ? normalizeQuestions(parsed.recall_questions).slice(0, 5)
-        : [];
-
-    // Ensure at least 3 questions (demo-safe) and ideally 4, without trusting model
+    let recall_questions: AnalysisResult["recall_questions"] = [];
     if (decision === "triggered") {
-      const target = 4;
-      if (recall_questions.length < target) {
-        const needed = target - recall_questions.length;
-        const extras = buildFallbackQuestions(concepts, needed);
-        recall_questions = recall_questions.concat(extras).slice(0, target);
-      } else if (recall_questions.length > target) {
-        recall_questions = recall_questions.slice(0, target);
-      }
-    } else {
-      recall_questions = [];
+      const rawQuestions = Array.isArray(parsed.recall_questions) ? parsed.recall_questions : [];
+      const normalized = normalizeQuestions(rawQuestions).slice(0, 8);
+      recall_questions = enforceQuestionPlan(normalized, concepts, questionPlan);
     }
 
     return {
@@ -165,7 +239,7 @@ export async function generateBridgeQuestion(
 ): Promise<{ type: "open"; question: string } | null> {
   if (!relatedItems || relatedItems.length === 0) return null;
 
-  const systemPrompt = `You are Signal’s recall question generator.
+  const systemPrompt = `You are Signal's recall question generator.
 Return ONLY valid JSON matching the provided schema. No markdown, no extra keys.
 
 CRITICAL: The bridge question must be grounded in the CONTENT and use ONLY the shared concepts provided.
@@ -199,7 +273,7 @@ Return JSON in this exact schema (no extra fields):
 Rules:
 - The question must be answerable using the CONTENT.
 - It must connect the new content to one or more prior items via shared concepts.
-- Keep it concise (8–220 chars).`;
+- Keep it concise (8-220 chars).`;
 
   try {
     const completion = await openai.chat.completions.create({
@@ -222,7 +296,7 @@ Rules:
 
     if (!type || question.length < 8 || question.length > 220) return null;
     return { type: "open", question };
-  } catch (error) {
+  } catch {
     return null;
   }
 }
@@ -263,14 +337,14 @@ function isTooVague(concept: string): boolean {
     "learning",
     "technology",
     "basics",
-    "memory management", // too broad on its own; allow more specific variants
+    "memory management",
   ]);
   return vague.has(concept.toLowerCase());
 }
 
-type NormalizedQuestion =
-  | { type: "open"; question: string }
-  | { type: "mcq"; question: string; options: string[]; correct_index: number };
+type OpenQuestion = { type: "open"; question: string };
+type MCQQuestion = { type: "mcq"; question: string; options: string[]; correct_index: number };
+type NormalizedQuestion = OpenQuestion | MCQQuestion;
 
 function normalizeQuestions(input: any[]): NormalizedQuestion[] {
   const out: NormalizedQuestion[] = [];
@@ -288,23 +362,19 @@ function normalizeQuestions(input: any[]): NormalizedQuestion[] {
       continue;
     }
 
-    // MCQ validation
     const options = Array.isArray(q.options)
       ? q.options
           .filter((o: any) => typeof o === "string")
           .map((o: string) => o.trim())
       : [];
-
     const correct_index = Number(q.correct_index);
 
     if (options.length !== 4) continue;
     if (![0, 1, 2, 3].includes(correct_index)) continue;
+    if (options.some((o: string) => o.length < 2 || o.length > 120)) continue;
 
-    const optSet = new Set(options.map((o: any) => o.toLowerCase()));
+    const optSet = new Set(options.map((o: string) => o.toLowerCase()));
     if (optSet.size !== 4) continue;
-
-    // Avoid garbage options
-    if (options.some((o: any) => o.length < 2 || o.length > 120)) continue;
 
     out.push({ type: "mcq", question, options, correct_index });
   }
@@ -312,20 +382,125 @@ function normalizeQuestions(input: any[]): NormalizedQuestion[] {
   return out;
 }
 
-function buildFallbackQuestions(
+function enforceQuestionPlan(
+  candidates: NormalizedQuestion[],
   concepts: string[],
-  needed: number
-): Array<{ type: "open"; question: string }> {
-  const picked = concepts.slice(0, Math.max(needed, 1));
-  const extras: Array<{ type: "open"; question: string }> = [];
+  plan: QuestionPlan
+): NormalizedQuestion[] {
+  const openCandidates = candidates.filter((q): q is OpenQuestion => q.type === "open");
+  const mcqCandidates = candidates.filter((q): q is MCQQuestion => q.type === "mcq");
 
-  for (let i = 0; i < needed; i++) {
-    const c = picked[i] ?? "this concept";
-    extras.push({
-      type: "open",
-      question: `Explain ${c} in 1–2 sentences and name one common mistake or pitfall.`,
-    });
+  const openQuestions: OpenQuestion[] = openCandidates.slice(0, plan.openTarget);
+  if (openQuestions.length < plan.openTarget) {
+    openQuestions.push(
+      ...buildFallbackOpenQuestions(concepts, plan.openTarget - openQuestions.length, plan.mode)
+    );
   }
 
-  return extras;
+  const mcqQuestions: MCQQuestion[] = mcqCandidates.slice(0, plan.mcqTarget);
+  if (mcqQuestions.length < plan.mcqTarget) {
+    mcqQuestions.push(
+      ...buildFallbackMcqQuestions(concepts, plan.mcqTarget - mcqQuestions.length, plan.mode)
+    );
+  }
+
+  return orderQuestions(openQuestions, mcqQuestions, plan.ordering);
+}
+
+function orderQuestions(
+  openQuestions: OpenQuestion[],
+  mcqQuestions: MCQQuestion[],
+  ordering: QuestionPlan["ordering"]
+): NormalizedQuestion[] {
+  if (ordering === "open_first") {
+    return [...openQuestions, ...mcqQuestions];
+  }
+  if (ordering === "mcq_first") {
+    return [...mcqQuestions, ...openQuestions];
+  }
+
+  const out: NormalizedQuestion[] = [];
+  const maxLen = Math.max(openQuestions.length, mcqQuestions.length);
+  for (let i = 0; i < maxLen; i++) {
+    if (i < openQuestions.length) out.push(openQuestions[i]);
+    if (i < mcqQuestions.length) out.push(mcqQuestions[i]);
+  }
+  return out;
+}
+
+function buildFallbackOpenQuestions(
+  concepts: string[],
+  needed: number,
+  mode: LearningMode
+): OpenQuestion[] {
+  const out: OpenQuestion[] = [];
+  for (let i = 0; i < needed; i++) {
+    const concept = conceptAt(concepts, i);
+    let question: string;
+    switch (mode) {
+      case "assessment_exam_prep":
+        question = `Define ${concept} precisely, then apply it to a short test-style example.`;
+        break;
+      case "interview_prep":
+        if (i % 2 == 0) {
+          question = `Explain ${concept} in your own words and why it matters in practice.`;
+        } else {
+          question = `Walk me through when you would choose ${concept} over an alternative.`;
+        }
+        break;
+      default:
+        question = `In your own words, what is ${concept} and where would you use it?`;
+        break;
+    }
+    out.push({ type: "open", question });
+  }
+  return out;
+}
+
+function buildFallbackMcqQuestions(
+  concepts: string[],
+  needed: number,
+  mode: LearningMode
+): MCQQuestion[] {
+  const out: MCQQuestion[] = [];
+  for (let i = 0; i < needed; i++) {
+    const concept = conceptAt(concepts, i);
+    let question: string;
+    let correct: string;
+
+    switch (mode) {
+      case "assessment_exam_prep":
+        question = `Which of these is true about ${concept} in a test scenario?`;
+        correct = `A precise definition and correct use of ${concept}`;
+        break;
+      case "interview_prep":
+        question = `Which explanation of ${concept} would sound strongest in an interview?`;
+        correct = `The option that is clear, accurate, and grounded in real use`;
+        break;
+      default:
+        question = `Which option best captures the main idea of ${concept}?`;
+        correct = `The option that explains ${concept} clearly in context`;
+        break;
+    }
+
+    const options = [
+      correct,
+      `A common misconception about ${concept}`,
+      `A related but different concept from the same topic`,
+      `An unrelated claim that does not explain ${concept}`,
+    ];
+
+    out.push({
+      type: "mcq",
+      question,
+      options,
+      correct_index: 0,
+    });
+  }
+  return out;
+}
+
+function conceptAt(concepts: string[], index: number): string {
+  if (!concepts.length) return "the main concept from this content";
+  return concepts[index % concepts.length];
 }
