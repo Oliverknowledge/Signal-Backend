@@ -10,10 +10,17 @@ import { z } from 'zod';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { randomUUID } from 'crypto';
 import { fetchContent } from '../utils/contentFetcher.js';
-import { analyzeContent } from '../utils/openaiClient.js';
+import { analyzeContent, generateBridgeQuestion } from '../utils/openaiClient.js';
 import { logToOpik } from '../utils/opikLogger.js';
 
 // Request schema validation
+const LibraryDigestItemSchema = z.object({
+  content_id: z.string().min(1),
+  title: z.string().min(1),
+  concepts: z.array(z.string()),
+  created_at: z.number().int().nonnegative(),
+});
+
 const AnalyzeRequestSchema = z.object({
   content_url: z.string().url(),
   user_id_hash: z.string().min(1),
@@ -22,9 +29,23 @@ const AnalyzeRequestSchema = z.object({
   intervention_policy: z.enum(['focused', 'aggressive']).default('focused'),
   known_concepts: z.array(z.string()).default([]),
   weak_concepts: z.array(z.string()).default([]),
+  library_digest: z.array(LibraryDigestItemSchema).optional(),
 });
 
 type AnalyzeRequest = z.infer<typeof AnalyzeRequestSchema>;
+type LibraryDigestItem = z.infer<typeof LibraryDigestItemSchema>;
+
+type NormalizedDigestItem = {
+  contentId: string;
+  title: string;
+  concepts: string[];
+  createdAt: number;
+};
+
+type RetrievalCandidate = NormalizedDigestItem & {
+  overlapConcepts: string[];
+  overlapScore: number;
+};
 
 /**
  * Determines content type from URL
@@ -32,6 +53,81 @@ type AnalyzeRequest = z.infer<typeof AnalyzeRequestSchema>;
 function getContentType(url: string): 'video' | 'article' {
   const youtubePattern = /(?:youtube\.com|youtu\.be)/;
   return youtubePattern.test(url) ? 'video' : 'article';
+}
+
+function normalizeLibraryDigest(items?: LibraryDigestItem[]): NormalizedDigestItem[] {
+  if (!items || items.length === 0) return [];
+  return items
+    .slice(0, 100)
+    .map((item) => ({
+      contentId: item.content_id.trim(),
+      title: item.title.trim().slice(0, 80),
+      concepts: item.concepts
+        .filter((c) => typeof c === 'string')
+        .map((c) => c.trim())
+        .filter((c) => c.length > 0)
+        .slice(0, 12),
+      createdAt: Number.isFinite(item.created_at) ? item.created_at : 0,
+    }))
+    .filter((item) => item.contentId.length > 0 && item.title.length > 0 && item.concepts.length > 0);
+}
+
+function computeRetrievalCandidates(
+  newConcepts: string[],
+  digest: NormalizedDigestItem[]
+): RetrievalCandidate[] {
+  if (newConcepts.length === 0 || digest.length === 0) return [];
+
+  const newConceptSet = new Set(newConcepts.map((c) => c.trim().toLowerCase()).filter(Boolean));
+  const newConceptCount = newConceptSet.size;
+  if (newConceptCount === 0) return [];
+  const candidates: RetrievalCandidate[] = [];
+
+  for (const item of digest) {
+    const overlap = new Set<string>();
+    for (const concept of item.concepts) {
+      const key = concept.trim().toLowerCase();
+      if (key && newConceptSet.has(key)) {
+        overlap.add(concept);
+      }
+    }
+    const overlapScore = overlap.size;
+    const overlapRatio = overlapScore / newConceptCount;
+    if (overlapScore >= 2 && overlapRatio >= 0.25) {
+      candidates.push({
+        ...item,
+        overlapConcepts: Array.from(overlap),
+        overlapScore,
+      });
+    }
+  }
+
+  return candidates
+    .sort((a, b) => {
+      if (b.overlapScore !== a.overlapScore) return b.overlapScore - a.overlapScore;
+      return b.createdAt - a.createdAt;
+    })
+    .slice(0, 2);
+}
+
+function applyBridgeQuestion(
+  questions: Array<
+    | { type: 'open'; question: string }
+    | { type: 'mcq'; question: string; options: string[]; correct_index: number }
+  >,
+  bridge: { type: 'open'; question: string }
+) {
+  const updated = questions.slice();
+  const openIndex = updated.findIndex((q) => q.type === 'open');
+  if (openIndex >= 0) {
+    updated[openIndex] = bridge;
+    return updated;
+  }
+  if (updated.length > 0) {
+    updated[0] = bridge;
+    return updated;
+  }
+  return [bridge];
 }
 
 export default async function handler(
@@ -63,6 +159,7 @@ export default async function handler(
       intervention_policy,
       known_concepts,
       weak_concepts,
+      library_digest,
     } = validationResult.data;
 
     // Generate trace ID for this analysis
@@ -112,6 +209,49 @@ export default async function handler(
       return;
     }
 
+    // Optional: lightweight retrieval from client-provided library digest (no embeddings).
+    const normalizedDigest = normalizeLibraryDigest(library_digest);
+    const retrievalCandidates = computeRetrievalCandidates(analysisResult.concepts, normalizedDigest);
+
+    let retrievalUsed = false;
+    let relatedItems: Array<{
+      content_id: string;
+      title: string;
+      overlap_concepts: string[];
+      overlap_score: number;
+    }> = [];
+
+    let recallQuestions = analysisResult.recall_questions;
+
+    if (analysisResult.decision === 'triggered' && retrievalCandidates.length > 0) {
+      const bridge = await generateBridgeQuestion(
+        content,
+        goal_description,
+        retrievalCandidates.map((item) => ({
+          title: item.title,
+          overlapConcepts: item.overlapConcepts,
+        }))
+      );
+
+      if (bridge) {
+        recallQuestions = applyBridgeQuestion(recallQuestions, bridge);
+        retrievalUsed = true;
+        relatedItems = retrievalCandidates.map((item) => ({
+          content_id: item.contentId,
+          title: item.title,
+          overlap_concepts: item.overlapConcepts,
+          overlap_score: item.overlapScore,
+        }));
+      }
+    }
+
+    const retrievedCount = retrievalUsed ? relatedItems.length : 0;
+    const topOverlapScore = retrievalUsed && relatedItems.length > 0 ? relatedItems[0].overlap_score : 0;
+    // Count of shared concepts for the top retrieved item (0 when retrieval unused).
+    const overlapConceptsCount =
+      retrievalUsed && relatedItems.length > 0 ? relatedItems[0].overlap_concepts.length : 0;
+    const agentSteps = retrievalUsed ? ['retrieve_related', 'generate_bridge_question'] : [];
+
     // Step 3: Log to Opik (async, non-blocking) using multi-span trace
     const contentType = getContentType(content_url);
     // Attach .catch() so a late Opik rejection doesn't become unhandled (FUNCTION_INVOCATION_FAILED)
@@ -124,7 +264,12 @@ export default async function handler(
       user_id_hash,
       contentType,
       intervention_policy,
-      analysisResult.recall_questions.length
+      recallQuestions.length,
+      retrievalUsed,
+      retrievedCount,
+      topOverlapScore,
+      overlapConceptsCount,
+      agentSteps
     ).catch((error) => {
       console.error('Opik logging failed:', error instanceof Error ? error.message : 'Unknown error');
     });
@@ -134,14 +279,19 @@ export default async function handler(
     ]);
 
     // Step 4: Return structured results
-    res.status(200).json({
+    const responsePayload: Record<string, unknown> = {
       trace_id: traceId,
       concepts: analysisResult.concepts,
       relevance_score: analysisResult.relevance_score,
       learning_value_score: analysisResult.learning_value_score,
       decision: analysisResult.decision,
-      recall_questions: analysisResult.recall_questions,
-    });
+      recall_questions: recallQuestions,
+      related_items: relatedItems,
+      retrieval_used: retrievalUsed,
+      retrieved_count: retrievedCount,
+    };
+
+    res.status(200).json(responsePayload);
   } catch (error) {
     // Generic error handling
     const errorMessage = error instanceof Error ? error.message : 'Internal server error';

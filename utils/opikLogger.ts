@@ -82,10 +82,12 @@ async function getOpikClient(): Promise<OpikClient | null> {
  * Helper to safely get metadata object for Opik spans/traces.
  * Ensures values are serializable and flat.
  */
+type MetadataValue = string | number | boolean | null | string[];
+
 function sanitizeMetadata(
-  data: Record<string, string | number | boolean | null>
-): Record<string, string | number | boolean | null> {
-  const sanitized: Record<string, string | number | boolean | null> = {};
+  data: Record<string, MetadataValue>
+): Record<string, MetadataValue> {
+  const sanitized: Record<string, MetadataValue> = {};
   for (const [key, value] of Object.entries(data)) {
     // Skip nested objects - Opik expects flat metadata
     if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
@@ -115,7 +117,12 @@ export async function logToOpik(
   userIdHash: string,
   contentType: 'video' | 'article',
   interventionPolicy: InterventionPolicy,
-  recallQuestionCount: number
+  recallQuestionCount: number,
+  retrievalUsed: boolean = false,
+  retrievedCount: number = 0,
+  topOverlapScore: number = 0,
+  overlapConceptsCount: number = 0,
+  agentSteps: string[] = []
 ): Promise<void> {
   const opikClient = await getOpikClient();
   if (!opikClient) return;
@@ -143,6 +150,11 @@ export async function logToOpik(
         'trace.kind': 'signal_content_analysis',
         'user.id.hash': userIdHash, // Only hash, never raw user ID
         'intervention.policy': interventionPolicy,
+        'retrieval.used': retrievalUsed,
+        'retrieval.count': retrievedCount,
+        'retrieval.top_overlap_score': topOverlapScore,
+        'retrieval.overlap_concepts_count': overlapConceptsCount,
+        agent_steps: agentSteps,
       }),
     });
 
@@ -164,6 +176,11 @@ export async function logToOpik(
         'relevance.score': relevanceScore,
         'learning.value.score': learningValueScore,
         'user.id.hash': userIdHash, // Only hash, never raw user ID
+        'retrieval.used': retrievalUsed,
+        'retrieval.count': retrievedCount,
+        'retrieval.top_overlap_score': topOverlapScore,
+        'retrieval.overlap_concepts_count': overlapConceptsCount,
+        agent_steps: agentSteps,
       }),
     });
     // Docs: explicitly end spans to ensure end_time is set
@@ -187,6 +204,7 @@ export async function logToOpik(
         triggered: decision === 'triggered',
         'threshold.relevance': triggerThreshold,
         'threshold.learning': triggerThreshold,
+        agent_steps: agentSteps,
       }),
     });
     decideSpan?.end?.();
@@ -202,6 +220,11 @@ export async function logToOpik(
         },
         metadata: sanitizeMetadata({
           'questions.count': recallQuestionCount,
+          'retrieval.used': retrievalUsed,
+          'retrieval.count': retrievedCount,
+          'retrieval.top_overlap_score': topOverlapScore,
+          'retrieval.overlap_concepts_count': overlapConceptsCount,
+          agent_steps: agentSteps,
         }),
       });
       qSpan?.end?.();
@@ -223,4 +246,3 @@ export async function logToOpik(
     console.error(`[Opik] Failed to log trace ${traceId}:`, errorMessage);
   }
 }
-
