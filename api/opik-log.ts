@@ -397,6 +397,14 @@ export default async function handler(
 
     const validatedData = validationResult.data;
 
+    // Content decisions are already logged from /api/analyze (score_content, decide_action,
+    // generate_questions). Skip duplicate content_evaluation events arriving from clients
+    // to keep one trace per content item.
+    if (validatedData.event_type === 'content_evaluation') {
+      res.status(200).json({ ok: true, skipped: true, reason: 'dedup_content_evaluation' });
+      return;
+    }
+
     // Send to Opik (awaited): this endpoint exists purely for logging, so reliability matters.
     await sendToOpik(validatedData);
 
