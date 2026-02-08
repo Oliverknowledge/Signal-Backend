@@ -58,7 +58,7 @@ async function gradeAnswer(
   question: string,
   userAnswer: string,
   contentTitle: string
-): Promise<{ score: number; reasoning: string; key_points: string[] }> {
+): Promise<{ score: number; reasoning: string; key_points: string[]; could_have_said: string[] }> {
   const prompt = `You are grading a learner's open-ended recall answer.
 The learner watched/read content titled "${contentTitle}" and was asked this question: "${question}"
 
@@ -70,12 +70,13 @@ Rate how correct and complete their answer is on a scale of 0.0 to 1.0, where:
 - 0.7 = mostly correct, demonstrates good understanding
 - 1.0 = fully correct and comprehensive
 
-Return a short, stable explanation of the grade and 2–3 key points the answer should include.
+Return a short, stable explanation of the grade, 2-3 key points that matter for this question, and 2-3 concrete things the learner could have added.
 Respond with ONLY valid JSON in exactly this shape (no markdown, no extra text):
 {
   "score": 0.85,
   "reasoning": "One concise sentence explaining why.",
-  "key_points": ["point A", "point B"]
+  "key_points": ["point A", "point B"],
+  "could_have_said": ["specific missing idea 1", "specific missing idea 2"]
 }`;
 
   const completion = await openai.chat.completions.create({
@@ -84,7 +85,7 @@ Respond with ONLY valid JSON in exactly this shape (no markdown, no extra text):
       {
         role: 'system',
         content:
-          'You grade recall answers. Return only valid JSON with "score" (0-1), "reasoning" (string), and "key_points" (array of 2-3 short strings). Reasoning must be one concise sentence referencing the key concept.',
+          'You grade recall answers. Return only valid JSON with "score" (0-1), "reasoning" (string), "key_points" (array of 2-3 short strings), and "could_have_said" (array of 2-3 specific missing ideas). Reasoning must be one concise sentence referencing the key concept.',
       },
       { role: 'user', content: prompt },
     ],
@@ -114,7 +115,12 @@ Respond with ONLY valid JSON in exactly this shape (no markdown, no extra text):
     .filter((x: unknown) => typeof x === 'string')
     .slice(0, 3);
 
-  return { score, reasoning, key_points };
+  const couldHaveSaidRaw = Array.isArray(parsed.could_have_said) ? parsed.could_have_said : [];
+  const could_have_said = couldHaveSaidRaw
+    .filter((x: unknown) => typeof x === 'string')
+    .slice(0, 3);
+
+  return { score, reasoning, key_points, could_have_said };
 }
 async function logGradeToOpik(
   data: GradeRecallRequest,
@@ -206,7 +212,7 @@ export default async function handler(
   const data = parseResult.data;
 
   try {
-    const { score, reasoning, key_points } = await gradeAnswer(
+    const { score, reasoning, key_points, could_have_said } = await gradeAnswer(
       data.question,
       data.user_answer,
       data.content_title
@@ -219,8 +225,9 @@ export default async function handler(
       score: Math.round(score * 100) / 100,
       correct,
       threshold: CORRECTNESS_THRESHOLD,
-      reasoning,     // NEW
-      key_points     // NEW
+      reasoning,
+      key_points,
+      could_have_said
     });
   } catch (error) {
     const msg = error instanceof Error ? error.message : 'Grading failed';
