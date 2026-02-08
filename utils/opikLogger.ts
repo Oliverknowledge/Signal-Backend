@@ -13,10 +13,53 @@ type OpikClient = {
 };
 
 type InterventionPolicy = 'focused' | 'aggressive';
+type Decision = 'triggered' | 'ignored';
+type DecisionConfidence = 'high' | 'borderline' | 'low';
+type DecisionReasonCode =
+  | 'low_scores'
+  | 'high_scores'
+  | 'policy_blocked'
+  | 'retrieval_bridge_used'
+  | 'insufficient_concepts';
 
 const TRIGGER_THRESHOLDS: Record<InterventionPolicy, number> = {
   focused: 0.75,
   aggressive: 0.6,
+};
+
+const POLICY_THRESHOLDS: Record<
+  InterventionPolicy,
+  {
+    trigger: number;
+    highRelevance: number;
+    highLearning: number;
+    highConceptCount: number;
+    lowRelevance: number;
+    lowLearning: number;
+    lowConceptCount: number;
+    minConceptCount: number;
+  }
+> = {
+  focused: {
+    trigger: 0.75,
+    highRelevance: 0.85,
+    highLearning: 0.85,
+    highConceptCount: 6,
+    lowRelevance: 0.65,
+    lowLearning: 0.65,
+    lowConceptCount: 4,
+    minConceptCount: 4,
+  },
+  aggressive: {
+    trigger: 0.6,
+    highRelevance: 0.75,
+    highLearning: 0.75,
+    highConceptCount: 4,
+    lowRelevance: 0.55,
+    lowLearning: 0.55,
+    lowConceptCount: 2,
+    minConceptCount: 2,
+  },
 };
 
 // Opik client configuration (validated on first use)
@@ -99,6 +142,72 @@ function sanitizeMetadata(
   return sanitized;
 }
 
+function clamp01(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(1, value));
+}
+
+function normalizeDecisionConfidence(
+  relevanceScore: number,
+  learningValueScore: number,
+  conceptCount: number,
+  interventionPolicy: InterventionPolicy
+): DecisionConfidence {
+  const policy = POLICY_THRESHOLDS[interventionPolicy];
+  if (
+    relevanceScore >= policy.highRelevance &&
+    learningValueScore >= policy.highLearning &&
+    conceptCount >= policy.highConceptCount
+  ) {
+    return 'high';
+  }
+  if (
+    relevanceScore < policy.lowRelevance ||
+    learningValueScore < policy.lowLearning ||
+    conceptCount < policy.lowConceptCount
+  ) {
+    return 'low';
+  }
+  return 'borderline';
+}
+
+function normalizeDecisionReasonCode(args: {
+  systemDecision: Decision;
+  relevanceScore: number;
+  learningValueScore: number;
+  conceptCount: number;
+  interventionPolicy: InterventionPolicy;
+  retrievalUsed: boolean;
+}): DecisionReasonCode {
+  const {
+    systemDecision,
+    relevanceScore,
+    learningValueScore,
+    conceptCount,
+    interventionPolicy,
+    retrievalUsed,
+  } = args;
+  const policy = POLICY_THRESHOLDS[interventionPolicy];
+
+  if (retrievalUsed && systemDecision === 'triggered') {
+    return 'retrieval_bridge_used';
+  }
+
+  if (conceptCount < policy.minConceptCount) {
+    return 'insufficient_concepts';
+  }
+
+  if (systemDecision === 'triggered') {
+    return 'high_scores';
+  }
+
+  if (relevanceScore < policy.trigger || learningValueScore < policy.trigger) {
+    return 'low_scores';
+  }
+
+  return 'policy_blocked';
+}
+
 /**
  * High-level helper for logging a full Signal analysis as a multi-span trace.
  *
@@ -112,7 +221,7 @@ export async function logToOpik(
   traceId: string,
   relevanceScore: number,
   learningValueScore: number,
-  decision: 'triggered' | 'ignored',
+  decision: Decision,
   conceptCount: number,
   userIdHash: string,
   contentType: 'video' | 'article',
@@ -127,7 +236,48 @@ export async function logToOpik(
   const opikClient = await getOpikClient();
   if (!opikClient) return;
 
+  const normalizedRelevanceScore = clamp01(relevanceScore);
+  const normalizedLearningValueScore = clamp01(learningValueScore);
+  const normalizedConceptCount = Math.max(0, Math.floor(conceptCount));
+  const normalizedRetrievedCount = retrievalUsed ? Math.max(0, Math.floor(retrievedCount)) : 0;
+  const normalizedOverlapScore = clamp01(topOverlapScore);
+  const normalizedOverlapConceptsCount = retrievalUsed
+    ? Math.max(0, Math.floor(overlapConceptsCount))
+    : 0;
+  const normalizedAgentSteps = Array.isArray(agentSteps)
+    ? agentSteps.filter((step): step is string => typeof step === 'string')
+    : [];
   const triggerThreshold = TRIGGER_THRESHOLDS[interventionPolicy];
+  const decisionConfidence = normalizeDecisionConfidence(
+    normalizedRelevanceScore,
+    normalizedLearningValueScore,
+    normalizedConceptCount,
+    interventionPolicy
+  );
+  const decisionReasonCode = normalizeDecisionReasonCode({
+    systemDecision: decision,
+    relevanceScore: normalizedRelevanceScore,
+    learningValueScore: normalizedLearningValueScore,
+    conceptCount: normalizedConceptCount,
+    interventionPolicy,
+    retrievalUsed,
+  });
+  const decisionInput = {
+    event_type: 'content_evaluation' as const,
+    content_type: contentType,
+    'content.type': contentType,
+    content_id: null as string | null,
+    system_decision: decision,
+    relevance_score: normalizedRelevanceScore,
+    learning_value_score: normalizedLearningValueScore,
+    concept_count: normalizedConceptCount,
+    intervention_policy: interventionPolicy,
+    decision_confidence: decisionConfidence,
+    retrieval_used: retrievalUsed,
+    retrieved_count: normalizedRetrievedCount,
+    agent_steps: normalizedAgentSteps,
+    decision_reason_code: decisionReasonCode,
+  };
 
   try {
     // Do not set trace.id explicitly: Opik now expects UUIDv7 IDs.
@@ -135,26 +285,39 @@ export async function logToOpik(
     const trace = opikClient.trace({
       name: 'signal_content_analysis',
       startTime: new Date(),
-      input: {
-        'content.type': contentType,
-        'trace.kind': 'signal_content_analysis',
-      },
+      input: decisionInput,
       output: {
-        decision,
-        'relevance.score': relevanceScore,
-        'learning.value.score': learningValueScore,
+        system_decision: decision,
+        decision_reason_code: decisionReasonCode,
       },
       metadata: sanitizeMetadata({
         'signal.trace_id': traceId,
+        'event.type': 'content_evaluation',
+        event_type: decisionInput.event_type,
+        content_type: decisionInput.content_type,
         'content.type': contentType,
+        content_id: decisionInput.content_id,
         'trace.kind': 'signal_content_analysis',
         'user.id.hash': userIdHash, // Only hash, never raw user ID
+        system_decision: decision,
+        relevance_score: normalizedRelevanceScore,
+        learning_value_score: normalizedLearningValueScore,
+        concept_count: normalizedConceptCount,
+        intervention_policy: interventionPolicy,
+        decision_confidence: decisionConfidence,
+        decision_reason_code: decisionReasonCode,
         'intervention.policy': interventionPolicy,
         'retrieval.used': retrievalUsed,
-        'retrieval.count': retrievedCount,
-        'retrieval.top_overlap_score': topOverlapScore,
-        'retrieval.overlap_concepts_count': overlapConceptsCount,
-        agent_steps: agentSteps,
+        'retrieval.count': normalizedRetrievedCount,
+        'retrieval.top_overlap_score': normalizedOverlapScore,
+        'retrieval.overlap_concepts_count': normalizedOverlapConceptsCount,
+        retrieval_used: retrievalUsed,
+        retrieved_count: normalizedRetrievedCount,
+        agent_steps: normalizedAgentSteps,
+        'tag.intervention_policy': `intervention_policy:${interventionPolicy}`,
+        'tag.system_decision': `system_decision:${decision}`,
+        'tag.decision_confidence': `decision_confidence:${decisionConfidence}`,
+        'tag.retrieval_used': `retrieval_used:${retrievalUsed ? 'true' : 'false'}`,
       }),
     });
 
@@ -164,23 +327,26 @@ export async function logToOpik(
       name: 'score_content',
       type: 'general',
       input: {
-        'concept.count': conceptCount,
+        concept_count: normalizedConceptCount,
       },
       output: {
-        'relevance.score': relevanceScore,
-        'learning.value.score': learningValueScore,
+        relevance_score: normalizedRelevanceScore,
+        learning_value_score: normalizedLearningValueScore,
       },
       metadata: sanitizeMetadata({
         'event.type': 'content_evaluation',
-        'concept.count': conceptCount,
-        'relevance.score': relevanceScore,
-        'learning.value.score': learningValueScore,
+        event_type: 'content_evaluation',
+        concept_count: normalizedConceptCount,
+        relevance_score: normalizedRelevanceScore,
+        learning_value_score: normalizedLearningValueScore,
         'user.id.hash': userIdHash, // Only hash, never raw user ID
         'retrieval.used': retrievalUsed,
-        'retrieval.count': retrievedCount,
-        'retrieval.top_overlap_score': topOverlapScore,
-        'retrieval.overlap_concepts_count': overlapConceptsCount,
-        agent_steps: agentSteps,
+        'retrieval.count': normalizedRetrievedCount,
+        'retrieval.top_overlap_score': normalizedOverlapScore,
+        'retrieval.overlap_concepts_count': normalizedOverlapConceptsCount,
+        retrieval_used: retrievalUsed,
+        retrieved_count: normalizedRetrievedCount,
+        agent_steps: normalizedAgentSteps,
       }),
     });
     // Docs: explicitly end spans to ensure end_time is set
@@ -191,20 +357,26 @@ export async function logToOpik(
     const decideSpan = trace.span({
       name: 'decide_action',
       type: 'general',
-      input: {
-        'relevance.score': relevanceScore,
-        'learning.value.score': learningValueScore,
-      },
+      input: decisionInput,
       output: {
-        decision,
-        triggered: decision === 'triggered',
+        system_decision: decision,
+        decision_reason_code: decisionReasonCode,
       },
       metadata: sanitizeMetadata({
-        decision,
+        event_type: 'content_evaluation',
+        system_decision: decision,
+        relevance_score: normalizedRelevanceScore,
+        learning_value_score: normalizedLearningValueScore,
+        concept_count: normalizedConceptCount,
+        intervention_policy: interventionPolicy,
+        decision_confidence: decisionConfidence,
+        retrieval_used: retrievalUsed,
+        retrieved_count: normalizedRetrievedCount,
+        decision_reason_code: decisionReasonCode,
         triggered: decision === 'triggered',
         'threshold.relevance': triggerThreshold,
         'threshold.learning': triggerThreshold,
-        agent_steps: agentSteps,
+        agent_steps: normalizedAgentSteps,
       }),
     });
     decideSpan?.end?.();
@@ -221,10 +393,12 @@ export async function logToOpik(
         metadata: sanitizeMetadata({
           'questions.count': recallQuestionCount,
           'retrieval.used': retrievalUsed,
-          'retrieval.count': retrievedCount,
-          'retrieval.top_overlap_score': topOverlapScore,
-          'retrieval.overlap_concepts_count': overlapConceptsCount,
-          agent_steps: agentSteps,
+          'retrieval.count': normalizedRetrievedCount,
+          'retrieval.top_overlap_score': normalizedOverlapScore,
+          'retrieval.overlap_concepts_count': normalizedOverlapConceptsCount,
+          retrieval_used: retrievalUsed,
+          retrieved_count: normalizedRetrievedCount,
+          agent_steps: normalizedAgentSteps,
         }),
       });
       qSpan?.end?.();
