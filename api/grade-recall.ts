@@ -132,7 +132,6 @@ async function logGradeToOpik(
 
   try {
     const trace = client.trace({
-      id: data.trace_id,
       name: 'signal_content_analysis',
       startTime: new Date(data.timestamp),
       input: {

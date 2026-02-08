@@ -130,9 +130,9 @@ export async function logToOpik(
   const triggerThreshold = TRIGGER_THRESHOLDS[interventionPolicy];
 
   try {
-    // Create trace using our UUID so recall/feedback can add spans to the same trace
+    // Do not set trace.id explicitly: Opik now expects UUIDv7 IDs.
+    // Keep our v4 trace_id in metadata for correlation.
     const trace = opikClient.trace({
-      id: traceId,
       name: 'signal_content_analysis',
       startTime: new Date(),
       input: {

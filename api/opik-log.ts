@@ -302,7 +302,6 @@ async function sendToOpik(data: OpikLogRequest): Promise<void> {
     });
 
     const trace = client.trace({
-      id: data.trace_id,
       name: 'signal_content_decision',
       startTime: eventTime,
       input: decisionInput,
@@ -332,7 +331,6 @@ async function sendToOpik(data: OpikLogRequest): Promise<void> {
 
   // Keep non-decision event types unchanged.
   const trace = client.trace({
-    id: data.trace_id,
     name: 'signal_observability_event',
     startTime: eventTime,
     input: {

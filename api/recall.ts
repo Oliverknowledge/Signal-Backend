@@ -58,9 +58,9 @@ async function logRecallToOpik(data: RecallRequest): Promise<void> {
   const recallRatio = data.recall_total > 0 ? data.recall_correct / data.recall_total : 0;
 
   try {
-    // Same trace id as content analysis so this becomes one trace per content item
+    // Do not set trace.id explicitly: Opik expects UUIDv7 IDs.
+    // Keep signal.trace_id metadata for correlation.
     const trace = client.trace({
-      id: data.trace_id,
       name: 'signal_content_analysis',
       startTime: new Date(),
       input: {
