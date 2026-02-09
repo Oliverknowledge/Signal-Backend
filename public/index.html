@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Signal Backend</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f6f8fb;
+        --card: #ffffff;
+        --text: #172033;
+        --muted: #53607a;
+        --accent: #0057ff;
+        --accent-hover: #0047cf;
+        --border: #dbe2ef;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: radial-gradient(circle at top right, #e9efff 0, var(--bg) 45%);
+        color: var(--text);
+        display: grid;
+        place-items: center;
+        padding: 24px;
+      }
+
+      .card {
+        width: min(720px, 100%);
+        background: var(--card);
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        padding: 28px;
+        box-shadow: 0 12px 30px rgba(17, 31, 68, 0.08);
+      }
+
+      h1 {
+        margin: 0 0 10px;
+        font-size: 1.85rem;
+        line-height: 1.2;
+      }
+
+      p {
+        margin: 10px 0;
+        color: var(--muted);
+        line-height: 1.55;
+      }
+
+      .cta {
+        display: inline-block;
+        margin-top: 14px;
+        text-decoration: none;
+        padding: 10px 14px;
+        border-radius: 10px;
+        background: var(--accent);
+        color: white;
+        font-weight: 600;
+      }
+
+      .cta:hover {
+        background: var(--accent-hover);
+      }
+
+      code {
+        background: #eef3ff;
+        border-radius: 6px;
+        padding: 2px 6px;
+        color: #28418a;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <h1>Signal Backend</h1>
+      <p>
+        Hi judges! This is the backend service for <strong>Signal</strong>, an iOS app.
+        The product experience lives in the iOS client, so this server is not intended
+        for direct end-user browsing.
+      </p>
+      <p>
+        If you are reviewing the project, please use the app and backend API endpoints
+        together (<code>/api/analyze</code>, <code>/api/feedback</code>, and
+        <code>/api/recall</code>).
+      </p>
+      <a
+        class="cta"
+        href="https://www.youtube.com/results?search_query=Signal+iOS+app+demo"
+        target="_blank"
+        rel="noopener noreferrer"
+        >Watch the YouTube demo</a
+      >
+    </main>
+  </body>
+</html>
